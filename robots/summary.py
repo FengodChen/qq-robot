@@ -77,18 +77,223 @@ def parse_time_window(token: Optional[str]) -> Tuple[int, str]:
         return 3 * 24 * 60 * 60, "3天"
     if s in ("7d", "7天", "一周"):
         return 7 * 24 * 60 * 60, "一周"
-    # Generic parse like '30m' or '2h'
-    m = re.match(r"^(\d+)\s*(m|min|分钟)$", s)
+    # Generic parse like '30m', '2h', '2.5h' - 支持小数
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*(m|min|分钟)$", s)
     if m:
-        return int(m.group(1)) * 60, f"{m.group(1)}分钟"
-    m = re.match(r"^(\d+)\s*(h|小时)$", s)
+        val = float(m.group(1))
+        display = f"{int(val)}分钟" if val == int(val) else f"{val:.1f}分钟"
+        return int(val * 60), display
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*(h|小时)$", s)
     if m:
-        return int(m.group(1)) * 3600, f"{m.group(1)}小时"
-    m = re.match(r"^(\d+)\s*(d|天)$", s)
+        val = float(m.group(1))
+        display = f"{int(val)}小时" if val == int(val) else f"{val:.1f}小时"
+        return int(val * 3600), display
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*(d|天)$", s)
     if m:
-        return int(m.group(1)) * 86400, f"{m.group(1)}天"
+        val = float(m.group(1))
+        display = f"{int(val)}天" if val == int(val) else f"{val:.1f}天"
+        return int(val * 86400), display
     # Fallback
     return 3600, "1小时"
+
+
+# 最大支持的时间范围：3天（单位：秒）
+MAX_SUMMARY_WINDOW_SECONDS = 3 * 24 * 60 * 60  # 259200秒
+
+
+def parse_natural_time_window(message: str) -> Tuple[Optional[int], Optional[str], str]:
+    """
+    从自然语言消息中解析时间窗口。
+    
+    支持的自然语言表达：
+    - "总结过去30分钟的聊天"
+    - "总结一下2小时内的消息"  
+    - "总结今天的聊天记录"
+    - "总结过去1天半的聊天"
+    - "总结3天内的消息"
+    - "总结过去的48小时"
+    - "总结最近2.5小时的聊天"
+    
+    返回: (seconds, display_text, error_message)
+    - seconds: 解析出的秒数，如果超出范围或为None则返回None
+    - display_text: 用于显示的时间描述
+    - error_message: 错误提示信息，成功时为空字符串
+    """
+    if not message:
+        return 3600, "1小时", ""
+    
+    message = message.strip()
+    message_lower = message.lower()
+    
+    # ========== 第一步：检测超出范围的请求 ==========
+    # 检测 "X天" 且 X > 3
+    large_day_patterns = [
+        r"(\d+(?:\.\d+)?)\s*个?\s*天",
+        r"(\d+(?:\.\d+)?)\s*d(?:ay)?s?",
+    ]
+    for pattern in large_day_patterns:
+        for match in re.finditer(pattern, message_lower):
+            try:
+                days = float(match.group(1))
+                if days > 3:
+                    return None, None, f"❌ 你想总结{days}天的聊天记录呀？这太久了呢~\n最多只能总结最近3天的内容哦！"
+            except (ValueError, IndexError):
+                continue
+    
+    # 检测 "一周"、"七天"、"7天" 等
+    if re.search(r"一?\s*周|七\s*天|7\s*天", message):
+        return None, None, "❌ 你想总结一周的聊天记录呀？这太久了呢~\n最多只能总结最近3天的内容哦！"
+    
+    # ========== 第二步：直接解析（兼容原有格式如 "1h", "30m" 等） ==========
+    tokens = message.split()
+    for token in tokens:
+        token_lower = token.lower()
+        # 尝试直接匹配格式如 "1h", "30m", "2d", "1.5小时"
+        direct_match = re.match(r"^(\d+(?:\.\d+)?)\s*([hmd]|小时|分钟|天)$", token_lower)
+        if direct_match:
+            value = float(direct_match.group(1))
+            unit = direct_match.group(2)
+            seconds, display = _convert_to_seconds(value, unit)
+            if seconds > MAX_SUMMARY_WINDOW_SECONDS:
+                return None, None, f"❌ 时间范围太大了啦！最多只能总结最近3天的聊天记录哦~\n"
+            return seconds, display, ""
+    
+    # ========== 第三步：自然语言解析 ==========
+    # 按优先级排序：先匹配更具体的模式
+    
+    # 天相关 - 先检查（避免"今天"被小时模式抢先）
+    day_patterns = [
+        # X天 / X.d天
+        (r"(\d+(?:\.\d+)?)\s*个?\s*天", _parse_day_pattern),
+        (r"(\d+(?:\.\d+)?)\s*d(?:ay)?s?", _parse_day_pattern),
+        # 今天
+        (r"今\s*天", lambda m: (24 * 3600, "1天")),
+        # 昨 天 (算作1天)
+        (r"昨\s*天", lambda m: (24 * 3600, "1天")),
+        # 前天 (算作2天)
+        (r"前\s*天", lambda m: (2 * 24 * 3600, "2天")),
+        # 这两/三天
+        (r"[这|那|上|近]\s*两\s*天", lambda m: (2 * 86400, "2天")),
+        (r"[这|那|上|近]\s*三\s*天", lambda m: (3 * 86400, "3天")),
+    ]
+    
+    for pattern, parser in day_patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            seconds, display = parser(match)
+            if seconds > MAX_SUMMARY_WINDOW_SECONDS:
+                return None, None, f"❌ 时间范围太大了啦！最多只能总结最近3天的聊天记录哦~\n"
+            return seconds, display, ""
+    
+    # 小时相关 - 注意：先匹配更长的模式，避免"一个半小时"被匹配成"半小时"
+    hour_patterns = [
+        # X个半小时 / X.5小时 - 必须先匹配（如"一个半小时"、"2个半小时"）
+        # 支持阿拉伯数字和中文数字
+        (r"([\d一二两三四五六七八九十]+)\s*个?\s*半\s*个?\s*小?时", _parse_hour_and_half),
+        # 一小时半 - 特殊处理
+        (r"一\s*小?时\s*半", lambda m: (5400, "1.5小时")),
+        (r"(\d+(?:\.\d+)?)\s*个?\s*小?时", _parse_hour_pattern),
+        (r"(\d+(?:\.\d+)?)\s*h(?:our)?s?", _parse_hour_pattern),
+        # 半天
+        (r"半\s*天", lambda m: (12 * 3600, "半天")),
+        # 一小时 / 1小时
+        (r"一\s*小?时", lambda m: (3600, "1小时")),
+        (r"两\s*小?时", lambda m: (2 * 3600, "2小时")),
+        # 半小时 - 放在最后，避免抢先匹配"一个半小时"
+        (r"半\s*小?时", lambda m: (1800, "30分钟")),
+    ]
+    
+    for pattern, parser in hour_patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            seconds, display = parser(match)
+            if seconds > MAX_SUMMARY_WINDOW_SECONDS:
+                return None, None, f"❌ 时间范围太大了啦！最多只能总结最近3天的聊天记录哦~\n"
+            return seconds, display, ""
+    
+    # 分钟相关
+    minute_patterns = [
+        (r"(\d+(?:\.\d+)?)\s*分(?:钟|鈡)?", _parse_minute_pattern),
+        (r"(\d+(?:\.\d+)?)\s*m(?:in)?", _parse_minute_pattern),
+    ]
+    
+    for pattern, parser in minute_patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            seconds, display = parser(match)
+            if seconds > MAX_SUMMARY_WINDOW_SECONDS:
+                return None, None, f"❌ 时间范围太大了啦！最多只能总结最近3天的聊天记录哦~\n"
+            return seconds, display, ""
+    
+    # ========== 默认返回1小时 ==========
+    return 3600, "1小时", ""
+
+
+def _convert_to_seconds(value: float, unit: str) -> Tuple[int, str]:
+    """将数值和单位转换为秒数和显示文本"""
+    unit = unit.lower()
+    if unit in ("m", "min", "分钟"):
+        seconds = int(value * 60)
+        return seconds, f"{value}分钟" if value == int(value) else f"{value:.1f}分钟"
+    elif unit in ("h", "hour", "小时"):
+        seconds = int(value * 3600)
+        return seconds, f"{value}小时" if value == int(value) else f"{value:.1f}小时"
+    elif unit in ("d", "day", "天"):
+        seconds = int(value * 86400)
+        return seconds, f"{value}天" if value == int(value) else f"{value:.1f}天"
+    return 3600, "1小时"
+
+
+def _parse_hour_pattern(match) -> Tuple[int, str]:
+    """解析小时模式"""
+    value_str = match.group(1)
+    total_hours = float(value_str)
+    
+    seconds = int(total_hours * 3600)
+    if total_hours == int(total_hours):
+        display = f"{int(total_hours)}小时"
+    else:
+        display = f"{total_hours:.1f}小时"
+    return seconds, display
+
+
+def _parse_hour_and_half(match) -> Tuple[int, str]:
+    """解析X个半小时的模式，如'一个半小时'、'2个半小时'"""
+    value_str = match.group(1)
+    # 支持中文数字
+    cn_numbers = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+                  '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+    if value_str in cn_numbers:
+        hours = cn_numbers[value_str]
+    else:
+        hours = int(value_str)
+    total_hours = hours + 0.5
+    
+    seconds = int(total_hours * 3600)
+    display = f"{total_hours:.1f}小时"
+    return seconds, display
+
+
+def _parse_minute_pattern(match) -> Tuple[int, str]:
+    """解析分钟模式"""
+    value = float(match.group(1))
+    seconds = int(value * 60)
+    if value == int(value):
+        display = f"{int(value)}分钟"
+    else:
+        display = f"{value:.1f}分钟"
+    return seconds, display
+
+
+def _parse_day_pattern(match) -> Tuple[int, str]:
+    """解析天模式"""
+    value = float(match.group(1))
+    seconds = int(value * 86400)
+    if value == int(value):
+        display = f"{int(value)}天"
+    else:
+        display = f"{value:.1f}天"
+    return seconds, display
 
 
 # === AGENT-FRIENDLY-API START ===

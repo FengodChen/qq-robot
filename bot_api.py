@@ -480,8 +480,8 @@ class ModeManager:
             await self.send_group_reply(group_id, user_id, message_id, "有什么可以帮你的吗？")
             return
         
-        # 优先使用 Bot Agent 处理自然语言
-        if self.bot_agent and not clean_msg.startswith('/'):
+        # 使用 Bot Agent 处理自然语言（包括以 / 开头的命令）
+        if self.bot_agent:
             try:
                 context = {
                     'group_id': group_id,
@@ -501,32 +501,6 @@ class ModeManager:
                 # 如果 Bot Agent 没有处理，继续走原有流程
             except Exception as e:
                 print(f"[!] Bot Agent 处理失败: {e}")
-        
-        # 传统命令处理 - 只保留 /help
-        tokens = clean_msg.split()
-        if tokens and tokens[0] == "/help":
-            help_text = (
-                "【命令帮助】\n"
-                "-" * 12 + "\n"
-                "/help - 显示帮助\n"
-                "/affection - 查看好感度\n"
-                "-" * 12 + "\n"
-                "群聊请@机器人再发消息\n"
-                "支持自然语言命令:\n"
-                "· 更改人设/查看人设\n"
-                "· 清除历史/查看历史\n"
-                "· 好感度/亲密度\n"
-                "· 总结一下"
-            )
-            await self.send_group_reply(group_id, user_id, message_id, help_text)
-            # 若当前模式提供帮助接口，调用该用户的机器人模块的帮助命令以显示更多细节
-            robot = self.get_user_robot(group_id, user_id)
-            if robot and hasattr(robot, "handle_command"):
-                try:
-                    await robot.handle_command("/help", group_id, user_id, self.send_group_reply, group_id, user_id, message_id)
-                except Exception as e:
-                    await self.send_group_reply(group_id, user_id, message_id, f"获取当前模式帮助失败: {e}")
-            return
         
         # 普通聊天消息 - 交给 chat 模式处理
         robot = self.get_user_robot(group_id, user_id)
@@ -551,8 +525,8 @@ class ModeManager:
         if not text.strip():
             return
         
-        # 优先使用 Bot Agent 处理自然语言
-        if self.bot_agent and not text.strip().startswith('/'):
+        # 使用 Bot Agent 处理自然语言（包括以 / 开头的命令）
+        if self.bot_agent:
             try:
                 context = {
                     'group_id': 0,
@@ -569,31 +543,6 @@ class ModeManager:
                 # 如果 Bot Agent 没有处理，继续走原有流程
             except Exception as e:
                 print(f"[!] Bot Agent 处理失败: {e}")
-        
-        # 传统命令处理 - 只保留 /help
-        tokens = text.split()
-        if tokens and tokens[0] == "/help":
-            help_text = (
-                "【命令帮助】\n"
-                "-" * 12 + "\n"
-                "/help - 显示帮助\n"
-                "/affection - 查看好感度\n"
-                "-" * 12 + "\n"
-                "支持自然语言命令:\n"
-                "· 更改人设/查看人设\n"
-                "· 清除历史/查看历史\n"
-                "· 好感度/亲密度\n"
-                "· 总结一下"
-            )
-            await self.send_private_msg(user_id, help_text)
-            # 若当前模式提供帮助接口，调用该用户的机器人模块的帮助命令以显示更多细节
-            robot = self.get_user_robot(0, user_id)
-            if robot and hasattr(robot, "handle_command"):
-                try:
-                    await robot.handle_command("/help", 0, user_id, self.send_private_msg, user_id)
-                except Exception as e:
-                    await self.send_private_msg(user_id, f"获取当前模式帮助失败: {e}")
-            return
         
         # 普通聊天消息 - 交给 chat 模式处理
         robot = self.get_user_robot(0, user_id)

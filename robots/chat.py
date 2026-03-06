@@ -648,9 +648,6 @@ class ChatRobot:
         if not clean_msg:
             await send_group_reply(group_id, user_id, message_id, "有什么可以帮你的吗？")
             return
-        if await self.handle_command(clean_msg, group_id, user_id, 
-                                     send_group_reply, group_id, user_id, message_id):
-            return
         # 获取sender_info中的信息
         card = None
         sex = None
@@ -667,9 +664,6 @@ class ChatRobot:
         sex = sender.get("sex", "unknown")  # 私聊也获取性别
         text = self.extract_text(data.get("message", []))
         if not text.strip():
-            return
-        if await self.handle_command(text, 0, user_id, 
-                                     send_private_msg, user_id):
             return
         # 私聊没有card（群名片），传入None
         await self.process_message(text, 0, user_id,

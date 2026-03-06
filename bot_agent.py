@@ -177,6 +177,22 @@ class BotAgent:
         """快速意图检查（基于关键词）- 仅用于明确的非AI判断场景"""
         message_lower = message.lower()
         
+        # 处理以 / 开头的传统命令（为了向后兼容，映射到自然语言意图）
+        if message.startswith('/'):
+            cmd = message.lower().split()[0]
+            cmd_map = {
+                '/help': (IntentType.HELP, 0.95),
+                '/affection': (IntentType.VIEW_AFFECTION, 0.95),
+                '/history': (IntentType.VIEW_HISTORY, 0.95),
+                '/clean': (IntentType.CLEAR_HISTORY, 0.95),
+                '/clear': (IntentType.CLEAR_HISTORY, 0.95),
+                '/reset': (IntentType.RESET_PERSONA, 0.95),
+                '/getprompt': (IntentType.GET_PERSONA, 0.95),
+                '/setprompt': (IntentType.SET_PERSONA, 0.95),
+            }
+            if cmd in cmd_map:
+                return cmd_map[cmd]
+        
         # 排除"我是XX"这种陈述句式，避免误判
         if message.startswith("我是") or message.startswith("我叫"):
             return None, 0.0
@@ -206,14 +222,21 @@ class BotAgent:
             if kw in message_lower:
                 return IntentType.HELP, 0.7
         
+        # 清除历史（特定组合优先于查看历史）
+        clear_history_keywords = ['清除历史', '清空历史', '删除历史', '清除记录', '清空记录', '删除记录', '忘掉', '忘记']
+        for kw in clear_history_keywords:
+            if kw in message:
+                return IntentType.CLEAR_HISTORY, 0.8
+        
         # 总结请求（相对明确的指令）
         for kw in self.intent_keywords.get(IntentType.SUMMARIZE, []):
             if kw in message:
                 return IntentType.SUMMARIZE, 0.6
         
-        # 查看历史（相对明确的指令）
-        for kw in self.intent_keywords.get(IntentType.VIEW_HISTORY, []):
-            if kw in message:
+        # 查看历史（相对明确的指令）- 排除"清除"、"清空"、"删除"等动作词
+        if '历史' in message or '记录' in message:
+            # 如果包含动作词，可能是清除历史，已经在上面处理
+            if not any(kw in message for kw in ['清除', '清空', '删除', '忘掉', '忘记']):
                 return IntentType.VIEW_HISTORY, 0.6
         
         return None, 0.0
@@ -232,7 +255,7 @@ class BotAgent:
 - clear_history(清除历史)：清除对话历史，如"清除历史"、"忘掉之前的对话"
 - view_history(查看历史)：查看之前的对话记录
 - view_affection(查看好感度)：询问好感度、亲密度等
-- help(帮助)：请求帮助、使用说明
+- help(帮助)：请求帮助、使用说明，如"/help"、"帮助"、"怎么用"
 - unknown(未知)：无法判断意图
 
 【重要判断规则】
@@ -256,7 +279,15 @@ class BotAgent:
    - 典型表达："清除历史"、"删除记录"、"忘掉之前的对话"、"重新开始"
    - 注意：与reset_persona的区别 - 仅清除历史而不恢复默认人设
 
-4. 置信度说明：
+4. help(帮助)判断规则：
+   - 用户请求帮助、使用说明、功能列表
+   - 典型表达："/help"、"帮助"、"怎么用"、"你会做什么"、"有什么功能"
+
+5. view_affection(查看好感度)判断规则：
+   - 用户询问好感度、亲密度、关系值
+   - 典型表达："好感度"、"亲密度"、"/affection"、"我们关系怎么样"
+
+6. 置信度说明：
    - 0.9-1.0：非常明确的指令
    - 0.7-0.9：比较明确的意图
    - 0.5-0.7：意图不太明确，可能隐含在对话中
@@ -279,6 +310,12 @@ class BotAgent:
 
 用户："忘掉我们之前的对话"
 {"intent":"clear_history","confidence":0.9,"parameters":{},"reason":"要求清除对话历史"}
+
+用户："/help"
+{"intent":"help","confidence":0.95,"parameters":{},"reason":"明确的帮助命令"}
+
+用户："好感度"
+{"intent":"view_affection","confidence":0.95,"parameters":{},"reason":"明确的查看好感度请求"}
 
 用户："我是医生"
 {"intent":"chat","confidence":0.9,"parameters":{},"reason":"用户自我介绍，非设置人设"}
@@ -450,31 +487,20 @@ class BotAgent:
         user_id = context.get('user_id', 0)
         message_id = context.get('message_id', 0)
         
-        # 解析时间窗口
-        time_window = "1h"  # 默认
-        window_keywords = {
-            '5分钟': '5m', '5分': '5m', '5m': '5m',
-            '1小时': '1h', '一小时': '1h', '1h': '1h', '小时': '1h',
-            '3小时': '3h', '三小时': '3h', '3h': '3h',
-            '半天': '12h', '12小时': '12h', '12h': '12h',
-            '1天': '1d', '一天': '1d', '1d': '1d', '今天': '1d',
-            '7天': '7d', '一周': '7d', '7d': '7d',
-        }
+        # 使用自然语言解析时间窗口
+        from robots.summary import parse_natural_time_window
+        seconds, window_text, error_msg = parse_natural_time_window(message)
         
-        for kw, val in window_keywords.items():
-            if kw in message:
-                time_window = val
-                break
+        # 如果时间范围超出限制，返回错误提示
+        if error_msg:
+            return True, error_msg
         
         # 直接调用 summary 模块执行总结
         if self.mode_manager and 'summary' in self.mode_manager.modes:
             try:
                 # 获取 summary 机器人实例
-                from robots.summary import parse_time_window
                 summary_module = self.mode_manager.modes['summary']
                 summary_robot = summary_module.create_robot(self.mode_manager.config)
-                
-                seconds, window_text = parse_time_window(time_window)
                 
                 # 执行总结
                 summary = await summary_robot._generate_and_summarize(
@@ -708,7 +734,12 @@ class BotAgent:
 · "好感度" - 查看我们的关系值
 
 【总结功能】
-· "总结一下"、"总结今天的聊天" - 自动总结群聊记录
+· "总结一下" - 总结最近1小时的聊天
+· "总结过去30分钟的聊天" - 支持任意时间范围
+· "总结2小时内的消息" - 使用自然语言指定时间
+· "总结今天的聊天" - 支持多种表达方式
+
+⚠️ 注意：最多只能总结最近3天的聊天记录哦~
 
 【好感度系统】
 · 真诚的态度比简单的问候更有效
