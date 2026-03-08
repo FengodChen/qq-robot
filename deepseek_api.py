@@ -14,6 +14,9 @@ class DeepSeekAPI:
     BASE_URL = "https://api.deepseek.com/v1/chat/completions"
     DEFAULT_MODEL = "deepseek-chat"
     
+    # 类级别的调试模式开关
+    debug_mode = False
+    
     def __init__(self, api_key: Optional[str] = None):
         """
         初始化 DeepSeek API 客户端
@@ -66,6 +69,28 @@ class DeepSeekAPI:
             "stream": False
         }
         
+        # DEBUG: 输出 API 请求详情
+        if DeepSeekAPI.debug_mode:
+            print("\n" + "=" * 60)
+            print("[DEBUG] ===== DEEPSEEK API REQUEST =====")
+            print("=" * 60)
+            import json
+            print(f"URL: {self.BASE_URL}")
+            print(f"Model: {model or self.DEFAULT_MODEL}")
+            print(f"Messages ({len(messages)}):")
+            for i, msg in enumerate(messages):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                print(f"\n  [{i}] {role}:")
+                # 对于长内容，显示完整内容
+                content_lines = content.split('\n')
+                for line in content_lines:
+                    print(f"      {line}")
+            print(f"\nPayload: {json.dumps(payload, ensure_ascii=False, indent=2)}")
+            print("=" * 60)
+            print("[DEBUG] ===== END API REQUEST =====")
+            print("=" * 60 + "\n")
+        
         try:
             response = requests.post(
                 self.BASE_URL,
@@ -113,6 +138,27 @@ class DeepSeekAPI:
             "messages": messages,
             "stream": True
         }
+        
+        # DEBUG: 输出流式 API 请求详情
+        if DeepSeekAPI.debug_mode:
+            print("\n" + "=" * 60)
+            print("[DEBUG] ===== DEEPSEEK API STREAM REQUEST =====")
+            print("=" * 60)
+            import json
+            print(f"URL: {self.BASE_URL}")
+            print(f"Model: {model or self.DEFAULT_MODEL}")
+            print(f"Messages ({len(messages)}):")
+            for i, msg in enumerate(messages):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                print(f"\n  [{i}] {role}:")
+                content_lines = content.split('\n')
+                for line in content_lines:
+                    print(f"      {line}")
+            print(f"\nPayload: {json.dumps(payload, ensure_ascii=False, indent=2)}")
+            print("=" * 60)
+            print("[DEBUG] ===== END API STREAM REQUEST =====")
+            print("=" * 60 + "\n")
         
         try:
             response = requests.post(

@@ -51,7 +51,7 @@ daily_summary_minute: 00
 # ===========================================
 
 # 最大上下文消息数量
-max_context: 20
+max_context: 5
 
 # 最大输入 token 数量
 max_input_tokens: 500

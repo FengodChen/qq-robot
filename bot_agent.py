@@ -162,6 +162,11 @@ class BotAgent:
         self.deepseek = DeepSeekAPI(api_key=api_key) if api_key else None
         self.mode_manager = mode_manager  # ModeManager 实例
         
+        # 调试模式
+        self.debug_mode = getattr(mode_manager, 'debug_mode', False) if mode_manager else False
+        if self.debug_mode:
+            print("[DEBUG] BotAgent 调试模式已启用")
+        
         # 意图关键词映射（用于快速判断）
         self.intent_keywords = {
             IntentType.SUMMARIZE: ['总结', '概括', '摘要', '汇总', '整理', '总结一下', '概括一下'],
@@ -348,6 +353,18 @@ class BotAgent:
         # 使用DeepSeek AI进行意图识别
         try:
             system_prompt, user_msg = self._build_intent_prompt(message)
+            
+            # DEBUG: 输出意图识别的完整 prompt
+            if self.debug_mode:
+                print("\n" + "=" * 60)
+                print("[DEBUG] ===== INTENT CLASSIFICATION PROMPT =====")
+                print("=" * 60)
+                print(f"\n[SYSTEM PROMPT]:\n{system_prompt}\n")
+                print("-" * 40)
+                print(f"\n[USER MESSAGE]:\n{user_msg}\n")
+                print("=" * 60)
+                print("[DEBUG] ===== END INTENT PROMPT =====")
+                print("=" * 60 + "\n")
             
             response = self.deepseek.chat(
                 user_msg=user_msg,
@@ -554,6 +571,18 @@ class BotAgent:
 只返回JSON格式，不要有任何其他说明。"""
         
         try:
+            # DEBUG: 输出人设提取的完整 prompt
+            if self.debug_mode:
+                print("\n" + "=" * 60)
+                print("[DEBUG] ===== PERSONA EXTRACTION PROMPT =====")
+                print("=" * 60)
+                print(f"\n[SYSTEM PROMPT]:\n{system_prompt}\n")
+                print("-" * 40)
+                print(f"\n[USER MESSAGE]:\n{message}\n")
+                print("=" * 60)
+                print("[DEBUG] ===== END PERSONA EXTRACTION PROMPT =====")
+                print("=" * 60 + "\n")
+            
             response = self.deepseek.chat(
                 user_msg=message,
                 system_msg=system_prompt
@@ -651,6 +680,14 @@ class BotAgent:
                     None,
                     lambda: (robot.conversation.clear_custom_prompt(group_id, user_id), robot.conversation.clear_context(group_id, user_id))
                 )
+                # 重置好感度并恢复默认人设配置
+                if hasattr(robot, 'affection_manager') and robot.affection_manager:
+                    robot.affection_manager.reset_affection(group_id, user_id)
+                    # 从默认 system_prompt 解析默认人设
+                    default_personality = robot.affection_manager.parse_personality_from_text(
+                        robot.config.system_prompt
+                    )
+                    robot.affection_manager.update_personality(default_personality)
                 # 构建美观的重置成功提示
                 reset_msg = (
                     "🔄 【已恢复默认人设】🔄\n"
@@ -674,7 +711,10 @@ class BotAgent:
             robot = self.mode_manager.get_user_robot(group_id, user_id)
             if robot and hasattr(robot, 'conversation'):
                 robot.conversation.clear_context(group_id, user_id)
-                return True, "已经清除我们的对话历史啦~"
+                # 重置好感度
+                if hasattr(robot, 'affection_manager') and robot.affection_manager:
+                    robot.affection_manager.reset_affection(group_id, user_id)
+                return True, "已经清除我们的对话历史啦~ 好感度也已重置~"
         
         return True, "清除历史功能暂时不可用"
     

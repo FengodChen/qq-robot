@@ -62,7 +62,7 @@ except Exception:
         token: str = ""
         deepseek_api_key: str = ""
         system_prompt: str = ""
-        max_context: int = 10
+        max_context: int = 5
         max_input_tokens: int = 100
         max_output_tokens: int = 300
         max_prompt_tokens: int = 500
@@ -75,6 +75,8 @@ except Exception:
         daily_summary_minute: int = 0
         # 消息存储配置
         message_retention_days: int = 7
+        # 调试模式
+        debug_mode: bool = False
 
 
 class ModeManager:
@@ -132,6 +134,18 @@ class ModeManager:
         # 用户性别/昵称信息缓存: {(group_id, user_id): {'sex': 'male'/'female', 'nickname': '...', 'card': '...', 'timestamp': 1234567890}}
         self._user_info_cache = {}
         self._user_info_cache_ttl = 3600  # 缓存有效期1小时
+        
+        # 调试模式
+        self.debug_mode = getattr(config, 'debug_mode', False)
+        if self.debug_mode:
+            print("[DEBUG] ModeManager 调试模式已启用")
+            # 设置 DeepSeek API 的调试模式
+            try:
+                from deepseek_api import DeepSeekAPI
+                DeepSeekAPI.debug_mode = True
+                print("[DEBUG] DeepSeekAPI 调试模式已启用")
+            except Exception:
+                pass
 
     async def connect_sender(self):
         headers = {"Authorization": f"Bearer {self.config.token}"} if self.config.token else {}

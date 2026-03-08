@@ -7,6 +7,7 @@ QQ Bot 启动脚本
 import os
 import sys
 import asyncio
+import argparse
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -17,8 +18,15 @@ from config_loader import load_config
 
 def main():
     """主函数"""
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description="QQ Bot - 支持自然语言交互")
+    parser.add_argument("--debug", action="store_true", help="启用调试模式，输出完整的 system prompt 和对话等详细数据")
+    args = parser.parse_args()
+    
     print("=" * 60)
     print("QQ Bot - 支持自然语言交互")
+    if args.debug:
+        print("[DEBUG MODE] 调试模式已启用")
     print("=" * 60)
     
     # 加载配置
@@ -48,6 +56,7 @@ def main():
         daily_summary_hour=config_data.get('daily_summary_hour'),
         daily_summary_minute=config_data.get('daily_summary_minute'),
         message_retention_days=config_data.get('message_retention_days'),
+        debug_mode=args.debug,
     )
     
     # 创建并启动 ModeManager

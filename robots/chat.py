@@ -56,6 +56,16 @@ except Exception as e:
     print(f"[!] 数据库工具加载失败: {e}")
     DB_UTILS_AVAILABLE = False
 
+# 导入新闻服务
+try:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from news_service import get_news_service, init_news_service_from_config, get_cached_news_service
+    NEWS_SERVICE_AVAILABLE = True
+except Exception as e:
+    print(f"[!] 新闻服务加载失败: {e}")
+    NEWS_SERVICE_AVAILABLE = False
+
 
 # ========== 配置参数 ==========
 @dataclass
@@ -72,7 +82,7 @@ class BotConfig:
     system_prompt: str = ""
     
     # 限制参数（可调整）- 使用 token 数量限制
-    max_context: int = 10          # 上下文最多保留多少条
+    max_context: int = 5           # 上下文最多保留多少条
     max_input_tokens: int = 100    # 输入最多多少 token
     max_output_tokens: int = 300   # 输出最多多少 token
     max_prompt_tokens: int = 500   # 人设最多多少 token
@@ -91,6 +101,8 @@ class BotConfig:
     
     # 消息存储配置
     message_retention_days: int = 7
+    # 调试模式
+    debug_mode: bool = False
 
 # === AGENT-FRIENDLY-API START ===
 # Convenience helpers for programmatic/agent use (start)
@@ -120,7 +132,7 @@ def get_conversation_preview(group_id, user_id, max_messages=50, config=None):
 class ConversationManager:
     """管理群聊中每个人的对话上下文（支持持久化）"""
     
-    def __init__(self, max_context: int = 10, storage_file: str = None):
+    def __init__(self, max_context: int = 5, storage_file: str = None):
         # 结构: {(group_id, user_id): deque([...])}
         self.contexts: Dict[Tuple[int, int], deque] = {}
         self.max_context = max_context
@@ -333,6 +345,10 @@ class ChatRobot:
                 print("[*] 好感度系统已启用")
             except Exception as e:
                 print(f"[!] 好感度系统初始化失败: {e}")
+        
+        # 初始化新闻服务（延迟初始化，在第一次对话时触发）
+        self.news_service = None
+        self.news_service_initialized = False
         # 延迟创建 executor：如果 config 提供 shared_executor 则使用它
         if getattr(self.config, 'shared_executor', None):
             self.executor = self.config.shared_executor
@@ -342,6 +358,8 @@ class ChatRobot:
             self._owns_executor = True
         print(f"[*] ChatRobot 配置: max_context={self.config.max_context}, max_input_tokens={self.config.max_input_tokens}, max_output_tokens={self.config.max_output_tokens}")
         print(f"[*] AI 状态: {'已启用' if self.use_ai else '未启用（模拟模式）'}")
+        if getattr(self.config, 'debug_mode', False):
+            print("[DEBUG] ChatRobot 调试模式已启用，将输出完整的 system prompt 和对话数据")
 
     # ---------- 工具函数 ----------
     def extract_text(self, message) -> str:
@@ -377,7 +395,10 @@ class ChatRobot:
 
     async def _cmd_clear(self, group_id: int, user_id: int, send_func, *send_args) -> None:
         self.conversation.clear_context(group_id, user_id)
-        await send_func(*send_args, "已清除对话历史！")
+        # 重置好感度
+        if self.affection_manager:
+            self.affection_manager.reset_affection(group_id, user_id)
+        await send_func(*send_args, "已清除对话历史，好感度已重置！")
 
     async def _cmd_history(self, group_id: int, user_id: int, send_func, *send_args) -> None:
         context = self.conversation.get_context(group_id, user_id)
@@ -565,7 +586,43 @@ class ChatRobot:
                 current_affection = self.affection_manager.get_affection_value(group_id, user_id)
             
             messages = [{"role": "system", "content": system_prompt}]
-            # 构建对话者信息
+            
+            # DEBUG: 输出完整的 system prompt
+            if getattr(self.config, 'debug_mode', False):
+                print("\n" + "=" * 60)
+                print("[DEBUG] ===== SYSTEM PROMPT (完整) =====")
+                print("=" * 60)
+                print(system_prompt)
+                print("=" * 60)
+                print("[DEBUG] ===== END SYSTEM PROMPT =====")
+                print("=" * 60 + "\n")
+            
+            # ===== 第二个 System Prompt：新闻资讯 =====
+            # 延迟初始化新闻服务（仅在有对话时触发）
+            if NEWS_SERVICE_AVAILABLE and not self.news_service_initialized:
+                try:
+                    from config_loader import load_config
+                    config = load_config()
+                    if config.get("news_enabled", True):
+                        self.news_service = init_news_service_from_config(config)
+                        if self.news_service:
+                            print("[*] 新闻服务已初始化")
+                except Exception as e:
+                    print(f"[!] 新闻服务初始化失败: {e}")
+                self.news_service_initialized = True
+            
+            # 获取新闻并添加到 system prompt（作为第二个 prompt）
+            if self.news_service:
+                try:
+                    news_content = self.news_service.get_news_for_prompt()
+                    if news_content:
+                        messages.append({"role": "system", "content": news_content})
+                        print(f"[*] 已添加新闻到 system prompt")
+                except Exception as e:
+                    print(f"[!] 获取新闻失败: {e}")
+            # ========================================
+            
+            # 第三个 System Prompt：构建对话者信息
             user_info_parts = []
             # 优先使用群名片(card)，如果没有则使用昵称(nickname)
             display_name = card if card else nickname
@@ -581,6 +638,24 @@ class ChatRobot:
             for msg in context:
                 messages.append({"role": msg["role"], "content": msg["content"]})
             messages.append({"role": "user", "content": user_msg})
+            
+            # DEBUG: 输出完整的对话 messages
+            if getattr(self.config, 'debug_mode', False):
+                print("\n" + "=" * 60)
+                print("[DEBUG] ===== FULL MESSAGES (完整对话) =====")
+                print("=" * 60)
+                import json
+                for i, msg in enumerate(messages):
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    print(f"\n[Message {i}] Role: {role}")
+                    print("-" * 40)
+                    print(content)
+                    print("-" * 40)
+                print("\n" + "=" * 60)
+                print(f"[DEBUG] ===== END MESSAGES (共 {len(messages)} 条) =====")
+                print("=" * 60 + "\n")
+            
             prompt_type = "自定义" if custom_prompt else "默认"
             display_name_str = card if card else (nickname or '未知')
             sex_str = sex if sex else '未知'
