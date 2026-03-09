@@ -596,6 +596,21 @@ class ChatRobot:
                 print("=" * 60)
                 print("[DEBUG] ===== END SYSTEM PROMPT =====")
                 print("=" * 60 + "\n")
+
+            # ===== 第一点五个 System Prompt：固定的聊天要求 ====
+            message_prompt = """称呼规则：
+- 请根据系统提供的"当前对话者信息"中的名字和性别来决定如何称呼对方
+
+聊天：
+- 你可视聊天氛围，主动并自然地和对方聊及今天的新闻内容
+- 请你依据你对对方的好感度变更语气
+- 当前内容与你之前的聊天内容保持非重复性
+
+输出格式：
+- 你在QQ中对话，因此不要使用MD格式，而是使用适合QQ聊天的格式
+- 请避免长篇大论
+"""
+            messages.append({"role": "system", "content": str(message_prompt)})
             
             # ===== 第二个 System Prompt：新闻资讯 =====
             # 延迟初始化新闻服务（仅在有对话时触发）
@@ -635,6 +650,12 @@ class ChatRobot:
             if user_info_parts:
                 user_info = "，".join(user_info_parts)
                 messages.append({"role": "system", "content": f"当前对话者信息：{user_info}。请根据这些信息用合适的称呼回应对方。"})
+            
+            # 添加当前时间信息（年月日时分秒）
+            from datetime import datetime
+            current_time = datetime.now().strftime("%Y年%m月%d日 %H时%M分%S秒")
+            messages.append({"role": "system", "content": f"当前时间：{current_time}"})
+            
             for msg in context:
                 messages.append({"role": msg["role"], "content": msg["content"]})
             messages.append({"role": "user", "content": user_msg})
