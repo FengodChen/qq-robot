@@ -347,6 +347,11 @@ class ChatRobot:
                 self.affection_manager = get_affection_manager(
                     api_key=self.config.deepseek_api_key
                 )
+                # 解析默认人设并更新到好感度系统
+                default_personality = self.affection_manager.parse_personality_from_text(
+                    self.config.system_prompt
+                )
+                self.affection_manager.update_personality(default_personality)
                 print("[*] 好感度系统已启用")
             except Exception as e:
                 print(f"[!] 好感度系统初始化失败: {e}")
@@ -645,10 +650,11 @@ class ChatRobot:
 - 你可视聊天氛围，主动并自然地和对方聊及今天的新闻内容
 - 请你依据你对对方的好感度变更语气
 - 当前内容与你之前的聊天内容保持非重复性
+- 你可以获取到群聊相关记录，其中“与<昵称>对话的分身”代表着是你的分身和<昵称>的聊天记录
 
 输出格式：
 - 你在QQ中对话，因此不要使用MD格式，而是使用适合QQ聊天的格式
-- 请避免长篇大论
+- 请避免长篇大论，控制字数在100字以内
 """
             messages.append({"role": "system", "content": str(message_prompt)})
             
@@ -733,10 +739,11 @@ class ChatRobot:
                         messages.append({"role": "system", "content": group_context_text})
                         
                         # ===== 验证日志 =====
-                        print(f"\n[群聊上下文] 已成功加载 {len(recent_messages)} 条消息:")
-                        for line in group_context_lines:
-                            print(f"  {line}")
-                        print()
+                        if getattr(self.config, 'debug_mode', False):
+                            print(f"\n[群聊上下文] 已成功加载 {len(recent_messages)} 条消息:")
+                            for line in group_context_lines:
+                                print(f"  {line}")
+                            print()
                         # ====================
                         
                         if getattr(self.config, 'debug_mode', False):

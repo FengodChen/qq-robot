@@ -532,10 +532,11 @@ class ModeManager:
                 target_user_id=target_user_id
             )
             
-            if success:
-                print(f"[DEBUG] 消息存储成功: {msg_type} msg_id={msg_id}, user={user_id}, group={group_id}, reply_to={reply_to}, target={target_user_id}")
-            else:
-                print(f"[DEBUG] 消息存储跳过(重复): {msg_type} msg_id={msg_id}")
+            if self.debug_mode:
+                if success:
+                    print(f"[DEBUG] 消息存储成功: {msg_type} msg_id={msg_id}, user={user_id}, group={group_id}, reply_to={reply_to}, target={target_user_id}")
+                else:
+                    print(f"[DEBUG] 消息存储跳过(重复): {msg_type} msg_id={msg_id}")
                 
         except Exception as e:
             # 存储失败不应影响主流程
