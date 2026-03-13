@@ -66,6 +66,9 @@ except Exception as e:
     print(f"[!] 新闻服务加载失败: {e}")
     NEWS_SERVICE_AVAILABLE = False
 
+# 全局变量：机器人QQ号（由 ModeManager 设置）
+self_id = None
+
 
 # ========== 配置参数 ==========
 @dataclass
@@ -101,6 +104,8 @@ class BotConfig:
     
     # 消息存储配置
     message_retention_days: int = 7
+    # 群聊时参考的最近消息数量
+    group_context_messages: int = 10
     # 调试模式
     debug_mode: bool = False
 
@@ -516,7 +521,12 @@ class ChatRobot:
         return custom if custom else self.config.system_prompt
 
     async def process_message(self, text: str, group_id: int, user_id: int,
-                             send_func, nickname: str = None, card: str = None, sex: str = None, *send_args) -> None:
+                             send_func, nickname: str = None, card: str = None, sex: str = None, 
+                             *send_args, timestamp: int = None, is_group: bool = False) -> None:
+        # 保存参数供后续使用
+        self._last_timestamp = timestamp
+        self._last_is_group = is_group
+        
         key = (group_id, user_id)
         with self._prompt_lock:
             if key in self.pending_prompts:
@@ -535,9 +545,15 @@ class ChatRobot:
             try:
                 loop = asyncio.get_event_loop()
                 # 如果 executor 被共享，run_in_executor 也能正常工作
+                # 使用 functools.partial 传递额外的关键字参数
+                import functools
+                func = functools.partial(
+                    self._call_ai_with_context,
+                    timestamp=timestamp, is_group=is_group
+                )
                 result = await loop.run_in_executor(
                     self.executor,
-                    self._call_ai_with_context,
+                    func,
                     group_id, user_id, text, nickname, card, sex
                 )
                 
@@ -565,6 +581,28 @@ class ChatRobot:
                     final_reply = reply + affection_line
                 
                 await send_func(*send_args, final_reply)
+                
+                # 存储机器人自己的消息，标记对话目标
+                if MESSAGE_STORE_AVAILABLE:
+                    try:
+                        from message_store import get_message_store
+                        store = get_message_store()
+                        import time
+                        store.add_message(
+                            msg_type='group' if is_group else 'private',
+                            user_id=self_id if 'self_id' in globals() and self_id else 0,
+                            group_id=group_id if is_group else 0,
+                            nickname='音理',
+                            content=reply,
+                            raw_message=reply,
+                            msg_id=int(time.time() * 1000),
+                            timestamp=int(time.time()),
+                            reply_to=None,
+                            target_user_id=user_id  # 标记这是在和谁对话
+                        )
+                        print(f"[DEBUG] 机器人回复已存储: target_user_id={user_id}")
+                    except Exception as e:
+                        print(f"[!] 存储机器人消息失败: {e}")
             except Exception as e:
                 print(f"[!] 处理失败: {e}")
                 import traceback
@@ -574,7 +612,9 @@ class ChatRobot:
             reply = f"收到: {text}\n(模拟模式)"
             await send_func(*send_args, reply)
 
-    def _call_ai_with_context(self, group_id: int, user_id: int, user_msg: str, nickname: str = None, card: str = None, sex: str = None) -> str:
+    def _call_ai_with_context(self, group_id: int, user_id: int, user_msg: str, 
+                               nickname: str = None, card: str = None, sex: str = None,
+                               timestamp: int = None, is_group: bool = False) -> str:
         try:
             context = self.conversation.get_context(group_id, user_id)
             custom_prompt = self.conversation.get_custom_prompt(group_id, user_id)
@@ -611,6 +651,109 @@ class ChatRobot:
 - 请避免长篇大论
 """
             messages.append({"role": "system", "content": str(message_prompt)})
+            
+            # ===== 群聊上下文 =====
+            print(f"[DEBUG] 群聊上下文检查: is_group={is_group}, timestamp={timestamp}, MESSAGE_STORE_AVAILABLE={MESSAGE_STORE_AVAILABLE}")
+            if is_group and timestamp and MESSAGE_STORE_AVAILABLE:
+                print(f"[DEBUG] 群聊上下文条件满足，开始加载...")
+                try:
+                    from message_store import get_message_store
+                    store = get_message_store()
+                    
+                    # 获取全局 self_id
+                    global self_id
+                    if 'self_id' not in globals() or self_id is None:
+                        self_id = 0
+                    
+                    # 获取最近群消息数量
+                    context_limit = getattr(self.config, 'group_context_messages', 10)
+                    print(f"[DEBUG] 正在获取群聊上下文: group_id={group_id}, limit={context_limit}, before_time={timestamp}")
+                    recent_messages = store.get_recent_group_messages(
+                        group_id=group_id,
+                        limit=context_limit,
+                        before_time=timestamp
+                    )
+                    
+                    print(f"[DEBUG] 获取到 {len(recent_messages) if recent_messages else 0} 条群聊消息")
+                    
+                    if recent_messages:
+                        # 格式化群聊历史
+                        group_context_lines = []
+                        group_context_lines.append("【群聊上下文（最近{}条）】".format(len(recent_messages)))
+                        
+                        # 缓存用户昵称，用于查询target_user_id对应的昵称
+                        user_nickname_cache = {}
+                        
+                        # 先遍历一遍，收集所有用户的昵称
+                        for msg in recent_messages:
+                            if msg.user_id != self_id and msg.nickname:
+                                user_nickname_cache[msg.user_id] = msg.nickname
+                        
+                        # 按时间正序处理
+                        for msg in reversed(recent_messages):
+                            # 确定发送者名称
+                            if msg.user_id == self_id:
+                                # 机器人自己的消息，检查是否有对话目标
+                                if msg.target_user_id:
+                                    # 从缓存中获取目标用户的昵称
+                                    target_nickname = user_nickname_cache.get(
+                                        msg.target_user_id, 
+                                        f"用户{msg.target_user_id}"
+                                    )
+                                    sender_name = f"与{target_nickname}对话的分身"
+                                else:
+                                    sender_name = "音理"
+                            else:
+                                sender_name = msg.nickname if msg.nickname else f"用户{msg.user_id}"
+                            
+                            content = msg.content
+                            
+                            # 处理引用消息
+                            if msg.reply_to:
+                                replied_msg = store.get_message_by_id(msg.reply_to)
+                                if replied_msg:
+                                    # 确定被引用消息的发送者名称
+                                    if replied_msg.user_id == self_id:
+                                        if replied_msg.target_user_id:
+                                            replied_name = user_nickname_cache.get(
+                                                replied_msg.target_user_id,
+                                                f"用户{replied_msg.target_user_id}"
+                                            )
+                                            replied_name = f"与{replied_name}对话的分身"
+                                        else:
+                                            replied_name = "音理"
+                                    else:
+                                        replied_name = replied_msg.nickname if replied_msg.nickname else f"用户{replied_msg.user_id}"
+                                    content = f"[引用{replied_name}:{replied_msg.content[:30]}...]{content}"
+                            
+                            group_context_lines.append(f"{sender_name}: {content}")
+                        
+                        group_context_lines.append("【以上是群聊历史，供你参考当前聊天氛围】")
+                        group_context_text = "\n".join(group_context_lines)
+                        messages.append({"role": "system", "content": group_context_text})
+                        
+                        # ===== 验证日志 =====
+                        print(f"\n[群聊上下文] 已成功加载 {len(recent_messages)} 条消息:")
+                        for line in group_context_lines:
+                            print(f"  {line}")
+                        print()
+                        # ====================
+                        
+                        if getattr(self.config, 'debug_mode', False):
+                            print(f"[DEBUG] 已添加群聊上下文: {len(recent_messages)}条消息")
+                    else:
+                        print(f"[DEBUG] 没有获取到群聊历史消息")
+                except Exception as e:
+                    print(f"[!] 添加群聊上下文失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                if not is_group:
+                    print(f"[DEBUG] 跳过群聊上下文: 不是群聊")
+                elif not timestamp:
+                    print(f"[DEBUG] 跳过群聊上下文: 没有时间戳")
+                elif not MESSAGE_STORE_AVAILABLE:
+                    print(f"[DEBUG] 跳过群聊上下文: 消息存储不可用")
             
             # ===== 第二个 System Prompt：新闻资讯 =====
             # 延迟初始化新闻服务（仅在有对话时触发）
@@ -728,6 +871,75 @@ class ChatRobot:
             print(f"[!] AI 调用失败: {e}")
             return "抱歉，我暂时无法回答。"
 
+    def _get_group_context(self, group_id: int, current_user_id: int, 
+                           current_timestamp: int, limit: int = 10) -> List[Dict]:
+        """
+        获取群聊上下文（最近n条消息）
+        
+        Args:
+            group_id: 群号
+            current_user_id: 当前正在对话的用户ID（用于识别"自己"的消息）
+            current_timestamp: 当前消息时间戳（获取此时间之前的消息）
+            limit: 获取消息数量
+        
+        Returns:
+            List[Dict]: 格式化的消息列表
+        """
+        if not MESSAGE_STORE_AVAILABLE:
+            return []
+        
+        try:
+            from message_store import get_message_store
+            store = get_message_store()
+            
+            # 获取最近n条消息（在当前消息之前）
+            messages = store.get_recent_group_messages(
+                group_id=group_id,
+                limit=limit,
+                before_time=current_timestamp
+            )
+            
+            if not messages:
+                return []
+            
+            # 格式化消息，并处理引用
+            formatted = []
+            for msg in messages:
+                # 确定发送者身份
+                if msg.user_id == self_id:
+                    # 这是机器人自己发的消息
+                    # 由于可能存在多个人同时聊天，将自己标记为"音理"
+                    sender_name = "音理"
+                else:
+                    sender_name = msg.nickname if msg.nickname else f"用户{msg.user_id}"
+                
+                content = msg.content
+                
+                # 如果有引用消息，尝试获取引用内容
+                if msg.reply_to:
+                    replied_msg = store.get_message_by_id(msg.reply_to)
+                    if replied_msg:
+                        replied_name = replied_msg.nickname if replied_msg.nickname else f"用户{replied_msg.user_id}"
+                        if replied_msg.user_id == self_id:
+                            replied_name = "音理"
+                        content = f"[引用{replied_name}的话]{content}"
+                
+                formatted.append({
+                    'sender': sender_name,
+                    'user_id': msg.user_id,
+                    'content': content,
+                    'timestamp': msg.timestamp,
+                    'is_self': msg.user_id == self_id
+                })
+            
+            # 反转列表，按时间正序排列（最早的在前）
+            formatted.reverse()
+            return formatted
+            
+        except Exception as e:
+            print(f"[!] 获取群聊上下文失败: {e}")
+            return []
+    
     async def handle_group(self, data: dict, send_group_reply, sender_info: dict = None):
         # 确保如果机器人有私有 executor，它会在模块卸载或程序退出时被关闭由创建方负责
         group_id = data.get("group_id")
@@ -737,6 +949,7 @@ class ChatRobot:
         nickname = sender.get("nickname", "未知")
         text = self.extract_text(data.get("message", []))
         raw = data.get("raw_message", "")
+        timestamp = data.get("time", int(time.time()))
         is_at_me = False  # manager already checked @
         if not text:
             return
@@ -751,13 +964,20 @@ class ChatRobot:
             card = sender_info.get('card')
             sex = sender_info.get('sex')
         await self.process_message(clean_msg, group_id, user_id,
-                                   send_group_reply, nickname, card, sex, group_id, user_id, message_id)
+                                   send_group_reply, nickname, card, sex, group_id, user_id, message_id,
+                                   timestamp=timestamp, is_group=True)
 
-    async def handle_private(self, data: dict, send_private_msg):
+    async def handle_private(self, data: dict, send_private_msg, sender_info: dict = None):
         user_id = data.get("user_id")
         sender = data.get("sender", {})
         nickname = sender.get("nickname", "未知")
-        sex = sender.get("sex", "unknown")  # 私聊也获取性别
+        sex = sender.get("sex", "unknown")  # 默认从sender获取
+        
+        # 如果传入了sender_info，使用其中的信息（可能包含从API获取的更准确的性别）
+        if sender_info:
+            sex = sender_info.get('sex', sex)
+            nickname = sender_info.get('nickname', nickname)
+        
         text = self.extract_text(data.get("message", []))
         if not text.strip():
             return

@@ -19,6 +19,7 @@ import asyncio
 import importlib
 import glob
 import threading
+from typing import Optional
 
 import websockets
 
@@ -134,6 +135,12 @@ class ModeManager:
         # 用户性别/昵称信息缓存: {(group_id, user_id): {'sex': 'male'/'female', 'nickname': '...', 'card': '...', 'timestamp': 1234567890}}
         self._user_info_cache = {}
         self._user_info_cache_ttl = 3600  # 缓存有效期1小时
+        
+        # 私聊用户信息缓存: {user_id: {'sex': '...', 'nickname': '...', 'timestamp': 1234567890}}
+        self._private_user_info_cache = {}
+        
+        # 机器人QQ号
+        self._self_id = None
         
         # 调试模式
         self.debug_mode = getattr(config, 'debug_mode', False)
@@ -318,6 +325,49 @@ class ModeManager:
         # 在模式加载完后，加载持久化的 user_modes（此时 modes 已可用）
         self._load_user_modes()
 
+    def _update_chat_robot_self_id(self):
+        """更新所有 chat 机器人的 self_id"""
+        try:
+            # 设置全局 self_id，供 chat.py 使用
+            import robots.chat as chat_module
+            chat_module.self_id = self._self_id
+        except Exception:
+            pass
+    
+    async def get_stranger_info(self, user_id: int) -> dict:
+        """获取陌生人信息（用于私聊获取性别等）"""
+        result = await self.send_api("get_stranger_info", {
+            "user_id": user_id,
+            "no_cache": True
+        })
+        if result and result.get("status") == "ok":
+            return result.get("data", {})
+        return {}
+    
+    async def get_private_user_info(self, user_id: int) -> dict:
+        """获取私聊用户信息（带缓存）"""
+        # 检查缓存
+        cached = self._private_user_info_cache.get(user_id)
+        if cached:
+            if time.time() - cached.get('timestamp', 0) < self._user_info_cache_ttl:
+                print(f"[*] 使用缓存的私聊用户信息: user={user_id}, sex={cached.get('sex')}")
+                return cached
+        
+        # 调用API获取
+        info = await self.get_stranger_info(user_id)
+        if info:
+            result = {
+                'sex': info.get('sex', 'unknown'),
+                'nickname': info.get('nickname', '未知'),
+                'age': info.get('age', 0),
+                'timestamp': time.time()
+            }
+            self._private_user_info_cache[user_id] = result
+            print(f"[*] 通过API获取私聊用户信息: user={user_id}, sex={result.get('sex')}")
+            return result
+        
+        return {'sex': 'unknown', 'nickname': '未知', 'age': 0}
+    
     def get_user_robot(self, group_id: int, user_id: int):
         """返回指定 (group_id, user_id) 的机器人实例；若不存在则基于当前默认模式创建一个。"""
         key = (group_id, user_id)
@@ -440,9 +490,23 @@ class ModeManager:
         except Exception as e:
             print(f"[!] 保存 user_modes 失败: {e}")
 
-    def _store_message(self, msg_type: str, data: dict, text: str):
+    def _extract_reply_msg_id(self, message) -> Optional[int]:
+        """从消息段中提取引用消息ID"""
+        if isinstance(message, list):
+            for seg in message:
+                if seg.get("type") == "reply":
+                    reply_id = seg.get("data", {}).get("id")
+                    if reply_id:
+                        try:
+                            return int(reply_id)
+                        except (ValueError, TypeError):
+                            pass
+        return None
+    
+    def _store_message(self, msg_type: str, data: dict, text: str, target_user_id: Optional[int] = None):
         """存储消息到数据库"""
         if not self.message_store:
+            print(f"[DEBUG] 消息存储跳过: message_store 未初始化")
             return
         try:
             user_id = data.get("user_id", 0)
@@ -452,7 +516,10 @@ class ModeManager:
             msg_id = data.get("message_id", 0)
             timestamp = data.get("time", int(time.time()))
             
-            self.message_store.add_message(
+            # 提取引用消息ID
+            reply_to = self._extract_reply_msg_id(data.get("message", []))
+            
+            success = self.message_store.add_message(
                 msg_type=msg_type,
                 user_id=user_id,
                 group_id=group_id,
@@ -460,11 +527,51 @@ class ModeManager:
                 content=text,
                 raw_message=raw,
                 msg_id=msg_id,
-                timestamp=timestamp
+                timestamp=timestamp,
+                reply_to=reply_to,
+                target_user_id=target_user_id
             )
+            
+            if success:
+                print(f"[DEBUG] 消息存储成功: {msg_type} msg_id={msg_id}, user={user_id}, group={group_id}, reply_to={reply_to}, target={target_user_id}")
+            else:
+                print(f"[DEBUG] 消息存储跳过(重复): {msg_type} msg_id={msg_id}")
+                
         except Exception as e:
             # 存储失败不应影响主流程
             print(f"[!] 消息存储失败: {e}")
+    
+    def store_bot_message(self, msg_type: str, group_id: int, user_id: int, 
+                          content: str, target_user_id: Optional[int] = None):
+        """
+        存储机器人自己发的消息
+        
+        Args:
+            msg_type: 'group' 或 'private'
+            group_id: 群号（私聊为0）
+            user_id: 机器人QQ号
+            content: 消息内容
+            target_user_id: 对话目标用户ID（标记这条消息是在和谁对话）
+        """
+        if not self.message_store:
+            return
+        try:
+            import time
+            self.message_store.add_message(
+                msg_type=msg_type,
+                user_id=user_id,
+                group_id=group_id if msg_type == "group" else 0,
+                nickname="音理",
+                content=content,
+                raw_message=content,
+                msg_id=int(time.time() * 1000),  # 临时msg_id
+                timestamp=int(time.time()),
+                reply_to=None,
+                target_user_id=target_user_id
+            )
+            print(f"[DEBUG] 机器人消息已存储: {msg_type} group={group_id}, target={target_user_id}")
+        except Exception as e:
+            print(f"[!] 存储机器人消息失败: {e}")
 
     async def _handle_group_message(self, data: dict):
         group_id = data.get("group_id")
@@ -530,7 +637,8 @@ class ModeManager:
 
     async def _handle_private_message(self, data: dict):
         user_id = data.get("user_id")
-        nickname = data.get("sender", {}).get("nickname", "未知")
+        sender = data.get("sender", {})
+        nickname = sender.get("nickname", "未知")
         text = self.extract_text(data.get("message", []))
         
         # 存储所有私聊消息
@@ -538,6 +646,11 @@ class ModeManager:
         
         if not text.strip():
             return
+        
+        # 获取私聊用户信息（包括性别）
+        user_info = await self.get_private_user_info(user_id)
+        sex = user_info.get('sex', 'unknown')
+        nickname = user_info.get('nickname', nickname)
         
         # 使用 Bot Agent 处理自然语言（包括以 / 开头的命令）
         if self.bot_agent:
@@ -547,6 +660,7 @@ class ModeManager:
                     'user_id': user_id,
                     'message_id': 0,
                     'nickname': nickname,
+                    'sex': sex,
                     'is_group': False
                 }
                 handled, response = await self.bot_agent.process_message(text.strip(), context)
@@ -561,7 +675,8 @@ class ModeManager:
         # 普通聊天消息 - 交给 chat 模式处理
         robot = self.get_user_robot(0, user_id)
         if robot and hasattr(robot, "handle_private"):
-            await robot.handle_private(data, self.send_private_msg)
+            # 传递性别信息
+            await robot.handle_private(data, self.send_private_msg, sender_info={'sex': sex})
         else:
             await self.send_private_msg(user_id, "当前没有可用的机器人模式。")
 
@@ -574,7 +689,10 @@ class ModeManager:
                     data = json.loads(message)
                     if data.get("self_id") and not self.self_id:
                         self.self_id = data.get("self_id")
+                        self._self_id = data.get("self_id")
                         print(f"[*] 机器人 QQ: {self.self_id}")
+                        # 更新 chat 机器人的 self_id
+                        self._update_chat_robot_self_id()
                     post_type = data.get("post_type")
                     if post_type == "message":
                         msg_type = data.get("message_type")
@@ -705,6 +823,7 @@ def main():
         daily_summary_hour=config_data.get('daily_summary_hour'),
         daily_summary_minute=config_data.get('daily_summary_minute'),
         message_retention_days=config_data.get('message_retention_days'),
+        group_context_messages=config_data.get('group_context_messages', 10),
     )
     mgr = ModeManager(config)
     mgr.load_modes()

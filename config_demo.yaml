@@ -53,6 +53,11 @@ daily_summary_minute: 00
 # 最大上下文消息数量
 max_context: 5
 
+# 群聊时参考的最近消息数量（包含其他群成员的对话）
+# 这会让机器人了解群聊氛围，更好地融入对话
+# 设为0则禁用此功能
+group_context_messages: 10
+
 # 最大输入 token 数量
 max_input_tokens: 500
 

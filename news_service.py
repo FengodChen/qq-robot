@@ -6,12 +6,19 @@
 
 import os
 import time
-import json
 import threading
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import requests
+
+# 导入数据库工具
+try:
+    from db_utils import get_db_manager, json_dumps, json_loads
+    DB_UTILS_AVAILABLE = True
+except Exception as e:
+    print(f"[!] 数据库工具加载失败: {e}")
+    DB_UTILS_AVAILABLE = False
 
 
 @dataclass
@@ -25,6 +32,16 @@ class NewsItem:
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "NewsItem":
+        return cls(
+            title=data.get("title", ""),
+            summary=data.get("summary", ""),
+            source=data.get("source", ""),
+            publish_time=data.get("publish_time", ""),
+            url=data.get("url", "")
+        )
 
 
 @dataclass
@@ -40,6 +57,15 @@ class NewsCache:
             "fetch_time": self.fetch_time,
             "formatted_news": self.formatted_news
         }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "NewsCache":
+        news_list = [NewsItem.from_dict(item) for item in data.get("news_list", [])]
+        return cls(
+            news_list=news_list,
+            fetch_time=data.get("fetch_time", 0),
+            formatted_news=data.get("formatted_news", "")
+        )
 
 
 class NewsService:
@@ -58,7 +84,7 @@ class NewsService:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         cache_hours: float = 6.0,
-        cache_file: str = "data/news_cache.json"
+        db_path: str = "data/news_cache.db"
     ):
         """
         初始化新闻服务
@@ -67,54 +93,83 @@ class NewsService:
             api_key: Ark API Key，如果不提供则从环境变量或 config.yaml 获取
             model: Ark 模型名称
             cache_hours: 缓存时间（小时）
-            cache_file: 缓存文件路径
+            db_path: 缓存数据库文件路径
         """
         self.api_key = api_key
         self.model = model or "doubao-seed-2-0-mini-260215"
         self.cache_hours = cache_hours
-        self.cache_file = cache_file
+        self.db_path = os.path.abspath(db_path)
         self._cache: Optional[NewsCache] = None
         self._lock = threading.Lock()
         self._enabled = bool(self.api_key)
         
         # 确保缓存目录存在
-        cache_dir = os.path.dirname(cache_file)
+        cache_dir = os.path.dirname(db_path)
         if cache_dir and not os.path.exists(cache_dir):
             os.makedirs(cache_dir, exist_ok=True)
         
+        # 初始化数据库
+        self._init_db()
+        
         # 尝试加载持久化缓存
-        self._load_cache_from_file()
+        self._load_cache_from_db()
         
         if self._enabled:
             print(f"[*] 新闻服务已启用，模型: {self.model}, 缓存时间: {cache_hours}小时")
         else:
             print("[!] 新闻服务未启用（未配置 API Key）")
     
-    def _load_cache_from_file(self):
-        """从文件加载缓存"""
+    def _init_db(self):
+        """初始化数据库表"""
+        if not DB_UTILS_AVAILABLE:
+            return
         try:
-            if os.path.exists(self.cache_file):
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                news_list = [NewsItem(**item) for item in data.get("news_list", [])]
+            db = get_db_manager(self.db_path)
+            create_sql = """
+                CREATE TABLE IF NOT EXISTS news_cache (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    fetch_time REAL NOT NULL,
+                    formatted_news TEXT NOT NULL,
+                    news_data TEXT NOT NULL  -- JSON格式存储新闻列表
+                );
+            """
+            db.init_tables(create_sql)
+        except Exception as e:
+            print(f"[!] 初始化新闻缓存数据库失败: {e}")
+    
+    def _load_cache_from_db(self):
+        """从数据库加载缓存"""
+        if not DB_UTILS_AVAILABLE:
+            return
+        try:
+            db = get_db_manager(self.db_path)
+            row = db.fetchone("SELECT * FROM news_cache WHERE id = 1")
+            
+            if row:
+                news_data = json_loads(row.get("news_data", "[]")) or []
+                news_list = [NewsItem(**item) for item in news_data]
                 self._cache = NewsCache(
                     news_list=news_list,
-                    fetch_time=data.get("fetch_time", 0),
-                    formatted_news=data.get("formatted_news", "")
+                    fetch_time=row.get("fetch_time", 0),
+                    formatted_news=row.get("formatted_news", "")
                 )
                 print(f"[*] 已加载新闻缓存，共 {len(news_list)} 条，缓存时间: {datetime.fromtimestamp(self._cache.fetch_time)}")
         except Exception as e:
             print(f"[!] 加载新闻缓存失败: {e}")
             self._cache = None
     
-    def _save_cache_to_file(self):
-        """保存缓存到文件"""
-        if not self._cache:
+    def _save_cache_to_db(self):
+        """保存缓存到数据库"""
+        if not DB_UTILS_AVAILABLE or not self._cache:
             return
         try:
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(self._cache.to_dict(), f, ensure_ascii=False, indent=2)
+            db = get_db_manager(self.db_path)
+            news_data = json_dumps([n.to_dict() for n in self._cache.news_list])
+            db.execute(
+                """INSERT OR REPLACE INTO news_cache (id, fetch_time, formatted_news, news_data) 
+                   VALUES (1, ?, ?, ?)""",
+                (self._cache.fetch_time, self._cache.formatted_news, news_data)
+            )
         except Exception as e:
             print(f"[!] 保存新闻缓存失败: {e}")
     
@@ -183,6 +238,7 @@ class NewsService:
                 return None
             
             # 尝试解析 JSON 格式
+            import json
             news_list = self._parse_news_content(content)
             
             if not news_list:
@@ -244,6 +300,7 @@ class NewsService:
         
         try:
             import re
+            import json
             
             # 尝试 JSON 格式解析
             try:
@@ -427,7 +484,7 @@ class NewsService:
             new_cache = self._fetch_news_from_api()
             if new_cache:
                 self._cache = new_cache
-                self._save_cache_to_file()
+                self._save_cache_to_db()
                 return new_cache.formatted_news
             elif self._cache:
                 # 获取失败但有过期缓存，返回过期缓存
@@ -455,12 +512,13 @@ class NewsService:
         """清除缓存"""
         with self._lock:
             self._cache = None
-            if os.path.exists(self.cache_file):
+            if DB_UTILS_AVAILABLE:
                 try:
-                    os.remove(self.cache_file)
+                    db = get_db_manager(self.db_path)
+                    db.execute("DELETE FROM news_cache WHERE id = 1")
+                    print("[*] 新闻缓存已清除")
                 except Exception as e:
-                    print(f"[!] 删除缓存文件失败: {e}")
-        print("[*] 新闻缓存已清除")
+                    print(f"[!] 清除新闻缓存失败: {e}")
     
     def get_cache_status(self) -> Dict[str, Any]:
         """获取缓存状态信息"""

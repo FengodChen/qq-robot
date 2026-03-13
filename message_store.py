@@ -39,6 +39,8 @@ class Message:
     raw_message: str             # 原始消息
     timestamp: int               # 时间戳
     msg_hash: str                # 消息内容哈希（用于去重）
+    reply_to: Optional[int]      # 引用的消息ID（若无则为None）
+    target_user_id: Optional[int]  # 对话目标用户ID（机器人自己发的消息时标记在和谁对话）
     
     def to_dict(self) -> Dict:
         return {
@@ -50,6 +52,8 @@ class Message:
             'content': self.content,
             'raw_message': self.raw_message,
             'timestamp': self.timestamp,
+            'reply_to': self.reply_to,
+            'target_user_id': self.target_user_id,
         }
 
 
@@ -101,9 +105,27 @@ class MessageStore:
                     raw_message TEXT,
                     timestamp INTEGER NOT NULL,
                     msg_hash TEXT,
+                    reply_to INTEGER DEFAULT NULL,
+                    target_user_id INTEGER DEFAULT NULL,
                     date TEXT GENERATED ALWAYS AS (date(timestamp, 'unixepoch')) STORED
                 )
             """)
+            
+            # 检查并添加 reply_to 列（兼容性处理）
+            try:
+                cursor = conn.execute("SELECT reply_to FROM messages LIMIT 1")
+            except sqlite3.OperationalError:
+                # 列不存在，添加它
+                conn.execute("ALTER TABLE messages ADD COLUMN reply_to INTEGER DEFAULT NULL")
+                print("[*] 数据库升级: 已添加 reply_to 列")
+            
+            # 检查并添加 target_user_id 列（兼容性处理）
+            try:
+                cursor = conn.execute("SELECT target_user_id FROM messages LIMIT 1")
+            except sqlite3.OperationalError:
+                # 列不存在，添加它
+                conn.execute("ALTER TABLE messages ADD COLUMN target_user_id INTEGER DEFAULT NULL")
+                print("[*] 数据库升级: 已添加 target_user_id 列")
             
             # 创建索引
             conn.execute("""
@@ -136,7 +158,9 @@ class MessageStore:
     
     def add_message(self, msg_type: str, user_id: int, group_id: Optional[int],
                     nickname: str, content: str, raw_message: str,
-                    msg_id: Optional[int] = None, timestamp: Optional[int] = None) -> bool:
+                    msg_id: Optional[int] = None, timestamp: Optional[int] = None,
+                    reply_to: Optional[int] = None,
+                    target_user_id: Optional[int] = None) -> bool:
         """
         添加一条消息到存储
         
@@ -179,9 +203,9 @@ class MessageStore:
                 
                 conn.execute("""
                     INSERT INTO messages 
-                    (msg_id, msg_type, user_id, group_id, nickname, content, raw_message, timestamp, msg_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (msg_id, msg_type, user_id, group_id, nickname, content, raw_message, timestamp, msg_hash))
+                    (msg_id, msg_type, user_id, group_id, nickname, content, raw_message, timestamp, msg_hash, reply_to, target_user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (msg_id, msg_type, user_id, group_id, nickname, content, raw_message, timestamp, msg_hash, reply_to, target_user_id))
                 conn.commit()
                 return True
     
@@ -239,7 +263,9 @@ class MessageStore:
                 content=row['content'] or '',
                 raw_message=row['raw_message'] or '',
                 timestamp=row['timestamp'],
-                msg_hash=row['msg_hash'] or ''
+                msg_hash=row['msg_hash'] or '',
+                reply_to=row['reply_to'],
+                target_user_id=row['target_user_id']
             ) for row in rows]
     
     def get_group_messages(self, group_id: int, start_time: int, 
@@ -249,6 +275,90 @@ class MessageStore:
             start_time=start_time, end_time=end_time,
             msg_type='group', group_id=group_id, limit=limit
         )
+    
+    def get_recent_group_messages(self, group_id: int, limit: int = 10,
+                                  before_time: Optional[int] = None) -> List[Message]:
+        """
+        获取指定群组的最近消息（按时间倒序）
+        
+        Args:
+            group_id: 群号
+            limit: 返回消息数量
+            before_time: 只获取此时间戳之前的消息（可选，用于排除当前消息）
+        
+        Returns:
+            List[Message]: 消息列表，按时间倒序（最新的在前）
+        """
+        conditions = ["msg_type = ?", "group_id = ?"]
+        params = ['group', group_id]
+        
+        if before_time is not None:
+            conditions.append("timestamp < ?")
+            params.append(before_time)
+        
+        where_clause = " AND ".join(conditions)
+        params.append(limit)
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(f"""
+                SELECT * FROM messages 
+                WHERE {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, params)
+            
+            rows = cursor.fetchall()
+            # 按时间倒序返回（最新的在前）
+            messages = []
+            for row in rows:
+                messages.append(Message(
+                    msg_id=row['msg_id'],
+                    msg_type=row['msg_type'],
+                    user_id=row['user_id'],
+                    group_id=row['group_id'] if row['group_id'] else None,
+                    nickname=row['nickname'] or '',
+                    content=row['content'] or '',
+                    raw_message=row['raw_message'] or '',
+                    timestamp=row['timestamp'],
+                    msg_hash=row['msg_hash'] or '',
+                    reply_to=row['reply_to'],
+                    target_user_id=row['target_user_id']
+                ))
+            return messages
+    
+    def get_message_by_id(self, msg_id: int) -> Optional[Message]:
+        """
+        根据消息ID获取消息
+        
+        Args:
+            msg_id: 消息ID
+        
+        Returns:
+            Message: 消息对象，若不存在则返回None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM messages WHERE msg_id = ? LIMIT 1",
+                (msg_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return Message(
+                    msg_id=row['msg_id'],
+                    msg_type=row['msg_type'],
+                    user_id=row['user_id'],
+                    group_id=row['group_id'] if row['group_id'] else None,
+                    nickname=row['nickname'] or '',
+                    content=row['content'] or '',
+                    raw_message=row['raw_message'] or '',
+                    timestamp=row['timestamp'],
+                    msg_hash=row['msg_hash'] or '',
+                    reply_to=row['reply_to'],
+                    target_user_id=row['target_user_id']
+                )
+            return None
     
     def get_private_messages(self, user_id: int, start_time: int,
                              end_time: int, limit: int = 10000) -> List[Message]:
@@ -373,7 +483,9 @@ class MessageStore:
                     content=row['content'] or '',
                     raw_message=row['raw_message'] or '',
                     timestamp=row['timestamp'],
-                    msg_hash=row['msg_hash'] or ''
+                    msg_hash=row['msg_hash'] or '',
+                    reply_to=row['reply_to'],
+                    target_user_id=row['target_user_id']
                 )
             
             if len(rows) < batch_size:
