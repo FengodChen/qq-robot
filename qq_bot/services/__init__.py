@@ -8,8 +8,10 @@
 
 from qq_bot.services.llm.base import LLMService
 from qq_bot.services.storage.base import StorageService
+from qq_bot.services.news_service import NewsService
 
 __all__ = [
     "LLMService",
     "StorageService",
+    "NewsService",
 ]

@@ -77,6 +77,7 @@ class Application:
         self._message_store: MessageStore | None = None
         self._llm_service: LLMService | None = None
         self._daily_summary_scheduler: DailySummaryScheduler | None = None
+        self._news_service: "NewsService | None" = None
         
         # 用户信息缓存: {(group_id, user_id): {'sex': '...', 'nickname': '...', 'timestamp': 1234567890}}
         self._user_info_cache: dict[tuple[int, int], dict] = {}
@@ -138,23 +139,27 @@ class Application:
             config=self.config
         )
         
-        # 4. 更新上下文（必须在插件初始化之前）
+        # 4. 初始化新闻服务
+        await self._setup_news_service()
+        
+        # 5. 更新上下文（必须在插件初始化之前）
         self.ctx.services = ServiceContainer(
             llm=self._llm_service,
             message_store=self._message_store,
             summary=self._summary_service,
+            news=self._news_service,
         )
         
-        # 5. 初始化意图分类器
+        # 6. 初始化意图分类器
         await self._setup_intent_classifier()
         
-        # 6. 初始化插件系统
+        # 7. 初始化插件系统
         await self._setup_plugins()
         
-        # 7. 初始化适配器
+        # 8. 初始化适配器
         await self._setup_adapter()
         
-        # 8. 初始化每日总结服务
+        # 9. 初始化每日总结服务
         await self._setup_daily_summary()
         
         self._initialized = True
@@ -236,6 +241,25 @@ class Application:
         except Exception as e:
             print(f"[!] 适配器初始化失败: {e}")
             raise AdapterError(f"适配器初始化失败: {e}")
+    
+    async def _setup_news_service(self) -> None:
+        """设置新闻服务。"""
+        try:
+            if not self.config.news.enabled:
+                print("[*] 新闻服务已禁用")
+                return
+            
+            from qq_bot.services.news_service import NewsService
+            
+            self._news_service = NewsService(
+                ark_config=self.config.ark,
+                news_config=self.config.news,
+                cache_path=Path(self.config.storage.data_dir) / "news_cache.json"
+            )
+            print("[*] 新闻服务已初始化")
+        except Exception as e:
+            print(f"[!] 新闻服务初始化失败: {e}")
+            # 非关键组件，允许失败
     
     async def _setup_daily_summary(self) -> None:
         """设置每日总结服务。"""

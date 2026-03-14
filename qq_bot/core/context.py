@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from qq_bot.services.storage.message import MessageStore
     from qq_bot.services.storage.conversation import ConversationManager
     from qq_bot.services.summary_service import SummaryService
+    from qq_bot.services.news_service import NewsService
 
 
 @dataclass
@@ -56,6 +57,7 @@ class ServiceContainer:
     message_store: "MessageStore | None" = None
     conversation: "ConversationManager | None" = None
     summary: "SummaryService | None" = None
+    news: "NewsService | None" = None
     
     def register(self, name: str, service: Any) -> None:
         """注册服务。"""

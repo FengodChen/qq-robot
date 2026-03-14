@@ -14,6 +14,112 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from qq_bot import create_app
 from qq_bot.core.config import BotConfig
 
+# 默认配置文件内容
+DEFAULT_CONFIG_CONTENT = '''# QQ Bot + DeepSeek AI 配置文件
+
+version: "2.0"
+
+# ===========================================
+# LLM API 配置
+# ===========================================
+llm:
+  provider: deepseek
+  api_key: "your-deepseek-api-key"
+  model: deepseek-chat
+  base_url: "https://api.deepseek.com/v1"
+  timeout: 60
+  max_retries: 3
+
+# ===========================================
+# 火山引擎 Ark API 配置（新闻搜索）
+# ===========================================
+ark:
+  api_key: "your-ark-api-key"
+  model: "your-ark-model"
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+
+# ===========================================
+# OneBot 协议配置
+# ===========================================
+onebot:
+  token: "your-qq-bot-token"
+  napcat_ws_url: "ws://127.0.0.1:3000/"
+  listen_host: "0.0.0.0"
+  listen_port: 3001
+  reconnect_interval: 5
+  heartbeat_interval: 30
+
+# ===========================================
+# 存储配置
+# ===========================================
+storage:
+  data_dir: "data"
+  message_retention_days: 7
+  conversation_max_context: 10
+  conversation_max_storage: 100
+
+# ===========================================
+# 聊天插件配置
+# ===========================================
+chat:
+  enabled: true
+  system_prompt: |
+    你是一个友好的AI助手，可以帮助用户解答问题。
+  max_input_tokens: 500
+  max_output_tokens: 100
+  max_prompt_tokens: 500
+  group_context_messages: 10
+  dynamic_persona_enabled: true
+  affection_enabled: true
+
+# ===========================================
+# 总结插件配置
+# ===========================================
+summary:
+  enabled: true
+  max_tokens: 4000
+  default_window: "1h"
+  max_window_days: 3
+
+# ===========================================
+# 每日定时总结配置
+# ===========================================
+daily_summary:
+  enabled: true
+  group_id: 123456789
+  hour: 23
+  minute: 0
+
+# ===========================================
+# 新闻服务配置
+# ===========================================
+news:
+  enabled: true
+  probability: 1.0
+  cache_hours: 6.0
+
+# ===========================================
+# 插件列表
+# ===========================================
+plugins:
+  - chat
+  - summary
+
+# ===========================================
+# 调试配置
+# ===========================================
+debug:
+  enabled: false
+  log_level: INFO
+  save_prompts: false
+  save_requests: false
+
+# ===========================================
+# 工作线程数
+# ===========================================
+max_workers: 10
+'''
+
 
 def create_parser() -> argparse.ArgumentParser:
     """创建参数解析器。"""
@@ -61,34 +167,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"[!] 配置文件已存在: {output_path}")
         return 1
     
-    config_content = '''# QQ Bot 配置文件
-# 请填写以下配置项
-
-# DeepSeek API 配置
-deepseek_api_key: "your-deepseek-api-key"
-
-# QQ Bot 配置
-qq_bot_token: "your-qq-bot-token"
-
-# NapCat WebSocket 配置
-napcat_ws_url: "ws://127.0.0.1:3000/"
-listen_host: "0.0.0.0"
-listen_port: 3001
-
-# 日志级别
-# debug_mode: false
-
-# 插件配置
-# plugins:
-#   - chat
-#   - summary
-
-# 聊天配置
-# max_context: 20
-# system_prompt: ""
-'''
-    
-    output_path.write_text(config_content, encoding="utf-8")
+    output_path.write_text(DEFAULT_CONFIG_CONTENT, encoding="utf-8")
     print(f"[*] 配置文件已创建: {output_path}")
     print("[*] 请编辑配置文件，填入必要的 API Key 和 Token")
     
@@ -100,6 +179,25 @@ async def cmd_run(args: argparse.Namespace) -> int:
     print("=" * 60)
     print("QQ Bot v2.0")
     print("=" * 60)
+    
+    config_path = Path(args.config)
+    
+    # 检查配置文件是否存在
+    if not config_path.exists():
+        print(f"[!] 配置文件不存在: {config_path}")
+        print("[*] 正在自动创建默认配置文件...")
+        
+        config_path.write_text(DEFAULT_CONFIG_CONTENT, encoding="utf-8")
+        print(f"[*] 配置文件已创建: {config_path}")
+        print("=" * 60)
+        print("[!] 请先编辑配置文件，填入必要的 API Key 和 Token:")
+        print(f"    1. llm.api_key - DeepSeek API Key")
+        print(f"    2. ark.api_key - ARK API Key")
+        print(f"    3. onebot.token - QQ Bot Token")
+        print(f"    4. onebot.napcat_ws_url - NapCat WebSocket 地址")
+        print("=" * 60)
+        print("[*] 配置完成后重新运行程序")
+        return 0
     
     # 加载配置
     try:

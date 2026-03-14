@@ -55,7 +55,11 @@ class ChatPlugin(Plugin):
         self.llm: Optional[LLMService] = ctx.services.llm
         self.message_store: Optional[MessageStore] = ctx.services.message_store
         
-        # 获取配置（从嵌套配置直接读取）
+        # 获取新闻服务
+        self.news_service = ctx.services.news
+        
+        # 获取配置
+        self.config = ctx.config
         chat_config = ctx.config.chat
         self.max_output_tokens = chat_config.max_output_tokens
         self.max_input_tokens = chat_config.max_input_tokens
@@ -810,6 +814,19 @@ class ChatPlugin(Plugin):
 """
         messages.append(ChatMessage(role="system", content=chat_requirements))
         
+        # 3.5 新闻内容（根据概率配置）
+        if self.news_service and self.config.news.enabled:
+            import random
+            if random.random() < self.config.news.probability:
+                try:
+                    news_content = await self.news_service.fetch_news()
+                    if news_content:
+                        news_prompt = f"【今日新闻参考】\n{news_content}\n\n你可以根据聊天氛围，自然地提及相关新闻内容。"
+                        messages.append(ChatMessage(role="system", content=news_prompt))
+                except Exception as e:
+                    if self.debug_mode:
+                        print(f"[!] 获取新闻失败: {e}")
+        
         # 4. 群聊上下文
         if event.is_group and self.message_store:
             group_context = await self._get_group_context(event)
@@ -859,15 +876,24 @@ class ChatPlugin(Plugin):
             return ""
         
         try:
-            # 获取最近群消息
+            # 获取最近群消息（扩大到包含当前消息的时间范围）
             recent_messages = self.message_store.get_messages_since(
                 since=event.timestamp - 3600,  # 最近1小时
                 group_id=event.group_id,
-                limit=self.group_context_messages
+                limit=self.group_context_messages + 5  # 多获取几条确保包含当前消息
             )
+            
+            # 过滤：只保留当前消息时间戳之前的消息（包括当前消息）
+            recent_messages = [
+                msg for msg in recent_messages 
+                if msg.timestamp <= event.timestamp + 1  # +1秒容错
+            ][:self.group_context_messages]
             
             if not recent_messages:
                 return ""
+            
+            if self.debug_mode:
+                print(f"[DEBUG] 群聊上下文: 获取到 {len(recent_messages)} 条消息")
             
             lines = [f"【群聊上下文（最近{len(recent_messages)}条）】"]
             
@@ -877,8 +903,12 @@ class ChatPlugin(Plugin):
                 if msg.nickname:
                     user_nickname_cache[msg.user_id] = msg.nickname
             
-            # 处理消息
+            # 处理消息（排除当前触发消息）
             for msg in reversed(recent_messages):
+                # 跳过当前这条触发回复的消息
+                if msg.msg_id == event.message_id:
+                    continue
+                
                 if msg.user_id == self.ctx.config.self_id if hasattr(self.ctx.config, "self_id") else 0:
                     sender_name = "音理"
                     if msg.target_user_id:
