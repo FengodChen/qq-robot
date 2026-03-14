@@ -166,85 +166,6 @@ class BotAgent:
         self.debug_mode = getattr(mode_manager, 'debug_mode', False) if mode_manager else False
         if self.debug_mode:
             print("[DEBUG] BotAgent 调试模式已启用")
-        
-        # 意图关键词映射（用于快速判断）
-        self.intent_keywords = {
-            IntentType.SUMMARIZE: ['总结', '概括', '摘要', '汇总', '整理', '总结一下', '概括一下'],
-            IntentType.SET_PERSONA: ['更改人设', '修改人设', '变成', '扮演', '设定为', '人设改成', '人设改为', '设定人设', '新人设'],
-            IntentType.GET_PERSONA: ['当前人设', '人设是什么', '查看人设', '现在人设'],
-            IntentType.CLEAR_HISTORY: ['清除', '清空', '删除', '忘掉', '忘记', '重置', '清掉'],
-            IntentType.VIEW_HISTORY: ['历史', '记录', '查看', '之前', '说过', '聊了'],
-            IntentType.VIEW_AFFECTION: ['好感度', '亲密度', '关系值', '友好度', '喜欢度'],
-            IntentType.HELP: ['帮助', 'help', '怎么用', '说明', '文档', '指南'],
-        }
-    
-    def _quick_intent_check(self, message: str) -> Tuple[Optional[IntentType], float]:
-        """快速意图检查（基于关键词）- 仅用于明确的非AI判断场景"""
-        message_lower = message.lower()
-        
-        # 处理以 / 开头的传统命令（为了向后兼容，映射到自然语言意图）
-        if message.startswith('/'):
-            cmd = message.lower().split()[0]
-            cmd_map = {
-                '/help': (IntentType.HELP, 0.95),
-                '/affection': (IntentType.VIEW_AFFECTION, 0.95),
-                '/history': (IntentType.VIEW_HISTORY, 0.95),
-                '/clean': (IntentType.CLEAR_HISTORY, 0.95),
-                '/clear': (IntentType.CLEAR_HISTORY, 0.95),
-                '/reset': (IntentType.RESET_PERSONA, 0.95),
-                '/getprompt': (IntentType.GET_PERSONA, 0.95),
-                '/setprompt': (IntentType.SET_PERSONA, 0.95),
-            }
-            if cmd in cmd_map:
-                return cmd_map[cmd]
-        
-        # 排除"我是XX"这种陈述句式，避免误判
-        if message.startswith("我是") or message.startswith("我叫"):
-            return None, 0.0
-        
-        # 排除"你是XX"这种句式
-        if message.startswith("你是") or message.startswith("你叫"):
-            return None, 0.0
-        
-        # 注意：set_persona, reset_persona, clear_history 等敏感操作
-        # 现在完全由 DeepSeek AI 判断，不在此处进行关键词匹配
-        # 以避免误判普通对话
-        
-        # 查看人设（相对安全，可以关键词匹配）
-        get_persona_keywords = ['当前人设', '人设是什么', '查看人设', '现在人设']
-        for kw in get_persona_keywords:
-            if kw in message:
-                return IntentType.GET_PERSONA, 0.8
-
-        # 查看好感度（需要排除"查看历史"的干扰）
-        affection_keywords = ['好感度', '亲密度', '关系值']
-        for kw in affection_keywords:
-            if kw in message and '历史' not in message and '记录' not in message:
-                return IntentType.VIEW_AFFECTION, 0.8
-        
-        # 帮助请求
-        for kw in self.intent_keywords.get(IntentType.HELP, []):
-            if kw in message_lower:
-                return IntentType.HELP, 0.7
-        
-        # 清除历史（特定组合优先于查看历史）
-        clear_history_keywords = ['清除历史', '清空历史', '删除历史', '清除记录', '清空记录', '删除记录', '忘掉', '忘记']
-        for kw in clear_history_keywords:
-            if kw in message:
-                return IntentType.CLEAR_HISTORY, 0.8
-        
-        # 总结请求（相对明确的指令）
-        for kw in self.intent_keywords.get(IntentType.SUMMARIZE, []):
-            if kw in message:
-                return IntentType.SUMMARIZE, 0.6
-        
-        # 查看历史（相对明确的指令）- 排除"清除"、"清空"、"删除"等动作词
-        if '历史' in message or '记录' in message:
-            # 如果包含动作词，可能是清除历史，已经在上面处理
-            if not any(kw in message for kw in ['清除', '清空', '删除', '忘掉', '忘记']):
-                return IntentType.VIEW_HISTORY, 0.6
-        
-        return None, 0.0
     
     def _build_intent_prompt(self, message: str) -> Tuple[str, str]:
         """构建意图识别prompt，使用DeepSeek AI判断所有敏感操作"""
@@ -260,7 +181,7 @@ class BotAgent:
 - clear_history(清除历史)：清除对话历史，如"清除历史"、"忘掉之前的对话"
 - view_history(查看历史)：查看之前的对话记录
 - view_affection(查看好感度)：询问好感度、亲密度等
-- help(帮助)：请求帮助、使用说明，如"/help"、"帮助"、"怎么用"
+- help(帮助)：请求帮助、使用说明，如"帮助"、"怎么用"、"你会做什么"
 - unknown(未知)：无法判断意图
 
 【重要判断规则】
@@ -276,7 +197,7 @@ class BotAgent:
 2. reset_persona(恢复默认)判断规则：
    - 用户明确要求恢复默认设置/人设
    - 典型表达："恢复默认"、"恢复默认人设"、"重置人设"、"重置为默认"
-   - "/reset" 命令
+   - "恢复默认"、"重置人设"等自然语言表达
    - 注意：单纯的"重置"、"重新开始"可能指清除历史，需结合上下文判断
 
 3. clear_history(清除历史)判断规则：
@@ -286,11 +207,11 @@ class BotAgent:
 
 4. help(帮助)判断规则：
    - 用户请求帮助、使用说明、功能列表
-   - 典型表达："/help"、"帮助"、"怎么用"、"你会做什么"、"有什么功能"
+   - 典型表达："帮助"、"怎么用"、"你会做什么"、"有什么功能"
 
 5. view_affection(查看好感度)判断规则：
    - 用户询问好感度、亲密度、关系值
-   - 典型表达："好感度"、"亲密度"、"/affection"、"我们关系怎么样"
+   - 典型表达："好感度"、"亲密度"、"我们关系怎么样"
 
 6. 置信度说明：
    - 0.9-1.0：非常明确的指令
@@ -316,8 +237,8 @@ class BotAgent:
 用户："忘掉我们之前的对话"
 {"intent":"clear_history","confidence":0.9,"parameters":{},"reason":"要求清除对话历史"}
 
-用户："/help"
-{"intent":"help","confidence":0.95,"parameters":{},"reason":"明确的帮助命令"}
+用户："帮助"
+{"intent":"help","confidence":0.95,"parameters":{},"reason":"明确的帮助请求"}
 
 用户："好感度"
 {"intent":"view_affection","confidence":0.95,"parameters":{},"reason":"明确的查看好感度请求"}
@@ -331,23 +252,16 @@ class BotAgent:
         return system_prompt, message
     
     def classify_intent(self, message: str) -> IntentResult:
-        """使用DeepSeek AI分类用户意图，优先使用AI判断而非关键词匹配"""
-        # 首先快速检查（用于非敏感操作）
-        quick_intent, quick_conf = self._quick_intent_check(message)
+        """使用DeepSeek AI分类用户意图。
         
-        # 如果没有配置DeepSeek，使用快速检查结果（降级方案）
+        所有意图识别都通过LLM完成，不使用关键词匹配。
+        """
+        # 如果没有配置DeepSeek，默认作为聊天
         if not self.deepseek:
-            if quick_intent:
-                return IntentResult(
-                    intent=quick_intent,
-                    confidence=quick_conf,
-                    parameters={},
-                    reason="基于关键词匹配（无DeepSeek）"
-                )
             return IntentResult(
                 intent=IntentType.CHAT,
                 confidence=0.5,
-                reason="默认作为普通聊天"
+                reason="无LLM服务，默认作为普通聊天"
             )
         
         # 使用DeepSeek AI进行意图识别
@@ -385,69 +299,39 @@ class BotAgent:
                 confidence = result.get('confidence', 0.5)
                 reason = result.get('reason', 'AI判断')
                 
-                # 对于敏感操作（设置人设、恢复默认、清除历史），必须依赖AI判断
-                # 即使置信度中等也优先使用AI结果，避免关键词误判
-                sensitive_intents = [
-                    IntentType.SET_PERSONA, 
-                    IntentType.RESET_PERSONA, 
-                    IntentType.CLEAR_HISTORY
-                ]
-                
-                if intent in sensitive_intents and confidence >= 0.5:
-                    # 敏感操作，AI置信度>=0.5就采用AI判断
+                # 置信度阈值判断
+                if confidence >= 0.7:
+                    # 高置信度
                     return IntentResult(
                         intent=intent,
                         confidence=confidence,
                         parameters=result.get('parameters', {}),
                         reason=f"[AI判断] {reason}"
-                    )
-                elif confidence >= 0.7:
-                    # 高置信度，使用AI判断
-                    return IntentResult(
-                        intent=intent,
-                        confidence=confidence,
-                        parameters=result.get('parameters', {}),
-                        reason=f"[AI判断] {reason}"
-                    )
-                elif quick_intent and quick_conf >= 0.6:
-                    # AI置信度低，但快速检查有较高置信度，使用快速检查
-                    return IntentResult(
-                        intent=quick_intent,
-                        confidence=quick_conf,
-                        parameters={},
-                        reason=f"[关键词匹配] {reason}（AI置信度较低）"
                     )
                 elif confidence >= 0.5:
-                    # 中等置信度，仍使用AI判断但标记
+                    # 中等置信度
                     return IntentResult(
                         intent=intent,
                         confidence=confidence,
                         parameters=result.get('parameters', {}),
-                        reason=f"[AI判断-低置信度] {reason}"
+                        reason=f"[AI判断-中等置信度] {reason}"
                     )
                 else:
                     # 低置信度，默认作为聊天
                     return IntentResult(
                         intent=IntentType.CHAT,
                         confidence=0.5,
-                        reason="AI无法确定意图，作为普通聊天"
+                        reason="AI置信度较低，作为普通聊天"
                     )
             
         except Exception as e:
             print(f"[!] DeepSeek意图识别失败: {e}")
         
-        # DeepSeek失败时回退到关键词匹配
-        if quick_intent:
-            return IntentResult(
-                intent=quick_intent,
-                confidence=quick_conf,
-                reason="基于关键词匹配（DeepSeek失败）"
-            )
-        
+        # DeepSeek失败时，默认作为聊天处理
         return IntentResult(
             intent=IntentType.CHAT,
             confidence=0.5,
-            reason="默认作为普通聊天"
+            reason="意图识别失败，作为普通聊天"
         )
     
     async def process_message(self, message: str, context: Dict) -> Tuple[bool, str]:
@@ -846,7 +730,7 @@ if __name__ == "__main__":
         # 恢复默认 - 这些将由AI判断
         ("恢复默认人设", "恢复默认-明确指令"),
         ("重置人设", "恢复默认-重置"),
-        ("/reset", "恢复默认-命令"),
+        ("恢复默认", "恢复默认-自然语言"),
         
         # 清除历史 - 这些将由AI判断
         ("清除历史记录", "清除历史-明确指令"),

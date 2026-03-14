@@ -7,7 +7,7 @@ with async methods handle_group(data, send_group_reply) and handle_private(data,
 === METADATA ===
 name: chat
 desc: AI聊天模式，支持人设定制和上下文记忆
-cmds: /help,/clean,/history,/setprompt,/getprompt,/reset
+cmds: 支持自然语言指令，如"帮助"、"清除历史"、"查看历史"、"更改人设"、"查看人设"、"恢复默认"
 features: 直接设置人设(无需确认),查看当前人设
 === END ===
 """
@@ -391,13 +391,26 @@ class ChatRobot:
 
     # ---------- 命令实现 ----------
     async def _cmd_help(self, group_id: int, user_id: int, send_func, *send_args) -> None:
-        help_text = "【小音理的帮助菜单】\n"
-        help_text += "-" * 15 + "\n"
-        for cmd, (desc, _) in self.commands.items():
-            help_text += f"{cmd} - {desc}\n"
-        help_text += "-" * 15 + "\n"
-        help_text += "也可以直接说:\n"
-        help_text += "更改人设/清除历史/查看历史"
+        help_text = """【小音理的帮助菜单】
+你可以直接对我说：
+
+【人设相关】
+· "更改人设成xxx" - 修改我的人设
+· "查看人设" - 看当前人设
+· "恢复默认" - 恢复默认人设
+
+【对话管理】
+· "清除历史" - 清除对话记录
+· "查看历史" - 看最近对话
+
+【好感度系统】
+· "好感度" - 查看我们的关系值
+
+【总结功能】
+· "总结一下" - 总结最近1小时的聊天
+· "总结今天的聊天" - 支持自然语言表达时间
+
+我会理解你的自然语言指令，直接说出来就好~"""
         await send_func(*send_args, help_text)
 
     async def _cmd_ping(self, group_id: int, user_id: int, send_func, *send_args) -> None:
@@ -439,11 +452,11 @@ class ChatRobot:
         if custom_prompt:
             # 显示自定义人设的前100字
             preview = custom_prompt[:100] + "..." if len(custom_prompt) > 100 else custom_prompt
-            msg = f"【当前人设】(自定义)\n{preview}\n\n使用 /reset 恢复默认人设"
+            msg = f"【当前人设】(自定义)\n{preview}\n\n对我说"恢复默认"可以恢复默认人设"
         else:
             # 显示默认人设
             default = self.config.system_prompt[:100] + "..." if len(self.config.system_prompt) > 100 else self.config.system_prompt
-            msg = f"【当前人设】(默认)\n{default}\n\n使用 /setprompt 更改人设"
+            msg = f"【当前人设】(默认)\n{default}\n\n对我说"更改人设成xxx"可以修改人设"
         await send_func(*send_args, msg)
 
     async def _cmd_reset(self, group_id: int, user_id: int, send_func, *send_args) -> None:

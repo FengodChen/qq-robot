@@ -3,8 +3,6 @@
 提供意图识别相关的所有 Prompt 模板。
 """
 
-from string import Template
-
 
 class IntentPrompts:
     """意图识别 Prompt 模板。
@@ -20,11 +18,11 @@ class IntentPrompts:
 - summarize(总结)：要求总结聊天记录，如"总结一下"、"概括今天的聊天"
 - set_persona(更改人设)：用户明确要求机器人改变角色/性格/行为模式
 - get_persona(查看人设)：询问当前人设是什么
-- reset_persona(恢复默认)：恢复默认设置/人设，如"恢复默认"、"重置人设"、"/reset"
+- reset_persona(恢复默认)：恢复默认设置/人设，如"恢复默认"、"重置人设"
 - clear_history(清除历史)：清除对话历史，如"清除历史"、"忘掉之前的对话"
 - view_history(查看历史)：查看之前的对话记录
 - view_affection(查看好感度)：询问好感度、亲密度等
-- help(帮助)：请求帮助、使用说明，如"/help"、"帮助"、"怎么用"
+- help(帮助)：请求帮助、使用说明，如"帮助"、"怎么用"
 - unknown(未知)：无法判断意图
 
 【重要判断规则】
@@ -40,7 +38,6 @@ class IntentPrompts:
 2. reset_persona(恢复默认)判断规则：
    - 用户明确要求恢复默认设置/人设
    - 典型表达："恢复默认"、"恢复默认人设"、"重置人设"、"重置为默认"
-   - "/reset" 命令
    - 注意：单纯的"重置"、"重新开始"可能指清除历史，需结合上下文判断
 
 3. clear_history(清除历史)判断规则：
@@ -50,11 +47,11 @@ class IntentPrompts:
 
 4. help(帮助)判断规则：
    - 用户请求帮助、使用说明、功能列表
-   - 典型表达："/help"、"帮助"、"怎么用"、"你会做什么"、"有什么功能"
+   - 典型表达："帮助"、"怎么用"、"你会做什么"、"有什么功能"
 
 5. view_affection(查看好感度)判断规则：
    - 用户询问好感度、亲密度、关系值
-   - 典型表达："好感度"、"亲密度"、"/affection"、"我们关系怎么样"
+   - 典型表达："好感度"、"亲密度"、"我们关系怎么样"
 
 6. 置信度说明：
    - 0.9-1.0：非常明确的指令
@@ -80,8 +77,8 @@ class IntentPrompts:
 用户："忘掉我们之前的对话"
 {"intent":"clear_history","confidence":0.9,"parameters":{},"reason":"要求清除对话历史"}
 
-用户："/help"
-{"intent":"help","confidence":0.95,"parameters":{},"reason":"明确的帮助命令"}
+用户："帮助"
+{"intent":"help","confidence":0.95,"parameters":{},"reason":"明确的帮助请求"}
 
 用户："好感度"
 {"intent":"view_affection","confidence":0.95,"parameters":{},"reason":"明确的查看好感度请求"}
@@ -122,37 +119,3 @@ class IntentPrompts:
 5. 如果提取失败或没有有效内容，返回success: false
 
 只返回JSON格式，不要有任何其他说明。"""
-
-
-class IntentKeywords:
-    """意图关键词映射。
-    
-    用于快速意图检查的关键词列表。
-    """
-    
-    # 各意图类型的关键词
-    SUMMARIZE = ['总结', '概括', '摘要', '汇总', '整理', '总结一下', '概括一下']
-    SET_PERSONA = ['更改人设', '修改人设', '变成', '扮演', '设定为', '人设改成', '人设改为', '设定人设', '新人设']
-    GET_PERSONA = ['当前人设', '人设是什么', '查看人设', '现在人设']
-    CLEAR_HISTORY = ['清除', '清空', '删除', '忘掉', '忘记', '重置', '清掉']
-    VIEW_HISTORY = ['历史', '记录', '查看', '之前', '说过', '聊了']
-    VIEW_AFFECTION = ['好感度', '亲密度', '关系值', '友好度', '喜欢度']
-    HELP = ['帮助', 'help', '怎么用', '说明', '文档', '指南']
-    
-    # 命令映射（向后兼容）
-    COMMAND_MAP = {
-        '/help': ('help', 0.95),
-        '/affection': ('view_affection', 0.95),
-        '/history': ('view_history', 0.95),
-        '/clean': ('clear_history', 0.95),
-        '/clear': ('clear_history', 0.95),
-        '/reset': ('reset_persona', 0.95),
-        '/getprompt': ('get_persona', 0.95),
-        '/setprompt': ('set_persona', 0.95),
-    }
-    
-    # 特定组合关键词（优先级更高）
-    CLEAR_HISTORY_COMPOUND = ['清除历史', '清空历史', '删除历史', '清除记录', '清空记录', '删除记录']
-    
-    # 需要排除的前缀（避免误判）
-    EXCLUDE_PREFIXES = ['我是', '我叫', '他是', '她是', '你是', '你叫']

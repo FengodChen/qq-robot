@@ -7,7 +7,7 @@ as the persona defined in robots.chat.BotConfig (音理).
 === METADATA ===
 name: summary
 desc: 聊天记录总结模式，支持时间窗口选择
-cmds: /help,/summary,/stats
+cmds: 支持自然语言指令，如"帮助"、"总结"、"统计"
 === END ===
 
 Commands (in group or private):
@@ -624,28 +624,22 @@ class SummaryRobot:
     # ---------- 命令实现 ----------
     async def _cmd_help(self, group_id: int, user_id: int, send_func, *send_args) -> None:
         """显示帮助菜单"""
-        help_text = (
-            "【总结模式帮助】\n"
-            "-" * 15 + "\n"
-            "可用命令:\n"
-        )
-        for cmd, (desc, _) in self.commands.items():
-            help_text += f"{cmd} - {desc}\n"
-        
-        help_text += (
-            "-" * 15 + "\n"
-            "使用说明:\n"
-            "/summary [时间] [token数]\n"
-            "/总结 [时间]\n\n"
-            "时间窗口:\n"
-            "5m/5分钟 1h/1小时 3h/3小时\n"
-            "12h/半天 1d/1天 7d/一周\n\n"
-            "示例:\n"
-            "/summary 3h - 总结3小时\n"
-            "/总结 1d - 总结1天\n\n"
-            "或者直接说:\n"
-            "总结一下今天的聊天"
-        )
+        help_text = """【总结模式帮助】
+你可以直接对我说：
+
+【总结功能】
+· "总结一下" - 总结最近1小时的聊天
+· "总结今天的聊天" - 总结今天的记录
+· "总结过去3小时的聊天" - 指定时间范围
+
+【时间范围】
+· 支持：5分钟、1小时、3小时、半天、1天、一周
+· 最长支持总结最近3天的聊天记录
+
+【统计功能】
+· "统计聊天" - 显示聊天统计数据
+
+我会理解你的自然语言指令，直接说出来就好~"""
         await send_func(*send_args, help_text)
 
     async def _cmd_summary(self, group_id: int, user_id: int, send_func, *send_args) -> None:
@@ -720,7 +714,7 @@ class SummaryRobot:
         if not clean:
             return
         
-        # 先尝试处理其他命令（如 /help, /stats）
+        # 先尝试处理命令
         if await self.handle_command(text, group_id, user_id, send_group_reply, group_id, user_id, message_id):
             return
         
@@ -728,7 +722,7 @@ class SummaryRobot:
         if not tokens:
             return
         cmd = tokens[0]
-        if cmd not in ("/summary", "/summarize", "/总结"):
+        if not (cmd.startswith("/") or "总结" in cmd):
             return
         
         # Parse optional args
@@ -758,7 +752,7 @@ class SummaryRobot:
         if not text or not text.strip():
             return
         
-        # 先尝试处理其他命令（如 /help, /stats）
+        # 先尝试处理命令
         if await self.handle_command(text, 0, user_id, send_private_msg, user_id):
             return
         
@@ -766,7 +760,7 @@ class SummaryRobot:
         if not tokens:
             return
         cmd = tokens[0]
-        if cmd not in ("/summary", "/summarize", "/总结"):
+        if not (cmd.startswith("/") or "总结" in cmd):
             return
         
         window_token = tokens[1] if len(tokens) > 1 else None

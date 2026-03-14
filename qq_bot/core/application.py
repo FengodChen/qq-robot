@@ -27,6 +27,7 @@ from qq_bot.services.llm.base import LLMService
 from qq_bot.services.llm.deepseek import DeepSeekService
 from qq_bot.services.storage.message import MessageStore
 from qq_bot.services.daily_summary import DailySummaryScheduler, DailySummaryConfig
+from qq_bot.services.summary_service import SummaryService
 from qq_bot.utils.debug_logger import log_compact_debug
 
 
@@ -130,22 +131,30 @@ class Application:
         # 2. 初始化 LLM 服务
         await self._setup_llm_service()
         
-        # 3. 更新上下文（必须在插件初始化之前）
+        # 3. 初始化总结服务
+        self._summary_service = SummaryService(
+            llm_service=self._llm_service,
+            message_store=self._message_store,
+            config=self.config
+        )
+        
+        # 4. 更新上下文（必须在插件初始化之前）
         self.ctx.services = ServiceContainer(
             llm=self._llm_service,
             message_store=self._message_store,
+            summary=self._summary_service,
         )
         
-        # 4. 初始化意图分类器
+        # 5. 初始化意图分类器
         await self._setup_intent_classifier()
         
-        # 5. 初始化插件系统
+        # 6. 初始化插件系统
         await self._setup_plugins()
         
-        # 6. 初始化适配器
+        # 7. 初始化适配器
         await self._setup_adapter()
         
-        # 7. 初始化每日总结服务
+        # 8. 初始化每日总结服务
         await self._setup_daily_summary()
         
         self._initialized = True
@@ -238,7 +247,6 @@ class Application:
             ds_config = DailySummaryConfig(
                 enabled=self.config.daily_summary.enabled,
                 group_id=self.config.daily_summary.group_id,
-                max_tokens=self.config.daily_summary.max_tokens,
                 hour=self.config.daily_summary.hour,
                 minute=self.config.daily_summary.minute
             )
@@ -246,8 +254,7 @@ class Application:
             self._daily_summary_scheduler = DailySummaryScheduler(
                 config=ds_config,
                 adapter=self._adapter,
-                llm_service=self._llm_service,
-                message_store=self._message_store
+                summary_service=self._summary_service
             )
             self._daily_summary_scheduler.start()
             print("[*] 每日总结服务已启动")

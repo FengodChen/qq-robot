@@ -8,8 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from qq_bot.services.llm.base import LLMService, ChatMessage
-from qq_bot.services.storage.message import MessageStore
+from qq_bot.services.summary_service import SummaryService
 
 
 @dataclass
@@ -18,7 +17,6 @@ class DailySummaryConfig:
     
     enabled: bool = False
     group_id: int = 0
-    max_tokens: int = 4000
     hour: int = 23
     minute: int = 0
 
@@ -31,12 +29,11 @@ class DailySummaryScheduler:
     Attributes:
         config: 每日总结配置。
         adapter: OneBot 适配器实例，用于发送消息。
-        llm_service: LLM 服务实例，用于生成总结。
-        message_store: 消息存储实例，用于获取聊天记录。
+        summary_service: 总结服务实例，用于生成总结。
     
     Example:
         >>> config = DailySummaryConfig(enabled=True, group_id=123456, hour=23, minute=0)
-        >>> scheduler = DailySummaryScheduler(config, adapter, llm, store)
+        >>> scheduler = DailySummaryScheduler(config, adapter, summary_service)
         >>> scheduler.start()
     """
     
@@ -44,21 +41,18 @@ class DailySummaryScheduler:
         self,
         config: DailySummaryConfig,
         adapter: Any,
-        llm_service: LLMService,
-        message_store: MessageStore
+        summary_service: SummaryService
     ):
         """初始化调度器。
         
         Args:
             config: 每日总结配置。
             adapter: OneBot 适配器实例。
-            llm_service: LLM 服务实例。
-            message_store: 消息存储实例。
+            summary_service: 总结服务实例。
         """
         self.config = config
         self.adapter = adapter
-        self.llm = llm_service
-        self.store = message_store
+        self.summary_service = summary_service
         
         self._task: Optional[asyncio.Task] = None
         self._running = False
@@ -125,16 +119,37 @@ class DailySummaryScheduler:
     
     async def _do_summary(self) -> None:
         """执行总结并发送消息。"""
+        import time
+        
         try:
             print(f"[*] DailySummaryScheduler: 开始执行每日总结 (群: {self.config.group_id})")
             
-            summary = await self._generate_summary()
+            # 使用 SummaryService 生成总结
+            since = time.time() - 86400  # 24小时前
+            summary = await self.summary_service.generate_summary(
+                group_id=self.config.group_id,
+                since=since,
+                window_display="过去24小时",
+                custom_persona=None,  # 使用 SummaryService 的默认人设（config.yaml 的 system_prompt）
+                max_messages=200
+            )
             
-            # 发送总结到群里
+            # 发送总结到群里（调整格式为每日总结风格）
             if summary:
+                # 将 SummaryService 的输出格式转换为每日总结格式
+                # 原格式：✨ 过去24小时群聊小结 ✨\n───\ncontent\n───
+                # 新格式：📅 每日群聊总结 (日期)\n════════════════════\n\ncontent
+                
+                lines = summary.split('\n')
+                # 提取内容部分（去掉第一行的标题和分隔符）
+                if len(lines) >= 4:
+                    content = '\n'.join(lines[2:-1])  # 去掉标题行、第一个分隔符、最后一个分隔符
+                else:
+                    content = summary
+                
                 header = f"📅 每日群聊总结 ({datetime.now().strftime('%Y-%m-%d')})\n"
                 header += "═" * 20 + "\n\n"
-                full_message = header + summary
+                full_message = header + content
                 
                 await self.adapter.send_group_message(
                     group_id=self.config.group_id,
@@ -153,64 +168,3 @@ class DailySummaryScheduler:
                 )
             except:
                 pass
-    
-    async def _generate_summary(self) -> str:
-        """生成聊天记录总结。
-        
-        Returns:
-            总结文本。
-        """
-        import time
-        
-        # 获取过去24小时的消息
-        now = int(time.time())
-        start_time = now - 86400  # 24小时
-        
-        messages = self.store.get_messages_since(
-            since=start_time,
-            group_id=self.config.group_id,
-            limit=5000
-        )
-        
-        if not messages:
-            return "📭 过去24小时内没有聊天记录。"
-        
-        # 转换为简单格式
-        msg_list = []
-        for m in messages:
-            ts = time.strftime("%H:%M", time.localtime(m.timestamp))
-            msg_list.append(f"[{ts}] {m.nickname}: {m.content}")
-        
-        # 限制消息数量
-        MAX_MESSAGES = 200
-        if len(msg_list) > MAX_MESSAGES:
-            # 均匀采样
-            step = len(msg_list) // MAX_MESSAGES
-            msg_list = msg_list[::step][:MAX_MESSAGES]
-        
-        chat_text = "\n".join(msg_list)
-        
-        # 构建总结提示词
-        prompt = f"""请以温柔、活泼的口吻总结以下24小时的群聊记录。
-
-聊天记录：
-{chat_text}
-
-要求：
-1. 纯文本输出，不要使用Markdown格式
-2. 总结3-6条关键要点
-3. 列出讨论的主要话题和结论
-4. 如有待办事项或争议点，请单独列出
-5. 给出1-2条温馨的后续建议
-6. 使用QQ表情符号增加可读性
-
-请开始总结："""
-        
-        # 调用 LLM
-        response = await self.llm.chat(
-            messages=[ChatMessage(role="user", content=prompt)],
-            max_tokens=self.config.max_tokens,
-            temperature=0.7
-        )
-        
-        return response.content

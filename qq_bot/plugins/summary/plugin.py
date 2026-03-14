@@ -10,7 +10,7 @@ from typing import Any
 from qq_bot.core.plugin import Plugin, PluginInfo
 from qq_bot.core.events import MessageEvent, ResponseEvent
 from qq_bot.core.context import Context
-from qq_bot.services.llm.base import ChatMessage
+from qq_bot.services.summary_service import SummaryService
 from qq_bot.utils.time import parse_natural_time, format_duration
 
 
@@ -46,6 +46,7 @@ class SummaryPlugin(Plugin):
             max_tokens=ctx.config.summary.max_tokens,
             max_window_days=ctx.config.summary.max_window_days
         )
+        self.summary_service: SummaryService | None = ctx.services.summary
     
     async def on_message(self, ctx: Context, event: MessageEvent) -> ResponseEvent | None:
         """处理总结相关消息。
@@ -196,62 +197,30 @@ class SummaryPlugin(Plugin):
         messages: list,
         window_display: str
     ) -> str:
-        """使用 LLM 生成总结。"""
-        # 构建提示词
-        chat_text = "\n".join([
-            f"{msg.nickname}: {msg.content}"
-            for msg in messages[-100:]  # 最多100条
-        ])
+        """使用 SummaryService 生成总结。"""
+        if not self.summary_service:
+            return "❌ 总结服务不可用，请检查配置。"
         
-        # 获取人设信息（如果有）
-        persona = getattr(ctx.config, 'chat', None)
-        if persona:
-            persona_text = getattr(persona, 'system_prompt', '')
+        # 获取时间戳（从消息中提取最早的）
+        import time
+        if messages:
+            since = min(msg.timestamp for msg in messages)
         else:
-            persona_text = getattr(ctx.config, 'system_prompt', '')
+            since = time.time() - 3600  # 默认1小时
         
-        # 构建带人设的提示词
-        system_prompt = """你是一个温柔的群聊总结助手。请根据以下人设来生成总结：
-"""
-        if persona_text:
-            system_prompt += f"{persona_text}\n\n"
-        else:
-            system_prompt += "你说话温柔体贴，像一个关心大家的朋友。\n\n"
+        # 获取用户自定义人设（如果有）
+        # 注意：这里使用 config.chat.system_prompt 作为用户自定义人设
+        # 如果用户有临时更改人设的功能，可以在这里获取
+        custom_persona = getattr(ctx.config.chat, 'system_prompt', None)
         
-        system_prompt += """【总结要求】
-1. 语气要符合你的人设，温柔自然，不要太正式或生硬
-2. 使用适合QQ聊天的格式，不要使用Markdown（如 **粗体**、*斜体*、# 标题等）
-3. 可以使用QQ表情符号（如 ✨、🌟、💕、😊 等）增加亲和力
-4. 分点总结，格式示例：
-   💬 主要话题：xxx
-   👥 活跃群友：xxx、xxx
-   ✨ 有趣内容：xxx
-5. 可以适当加入一些温馨的互动感，比如"大家聊得很开心呢~"
-6. 内容详略得当，自然流畅即可，不需要刻意压缩字数
-
-请用纯文本格式输出总结。"""
-        
-        user_prompt = f"""请总结以下{window_display}的群聊记录：
-
-{chat_text}
-
-开始总结："""
-        
-        # 调用 LLM
-        llm = ctx.services.llm
-        response = await llm.chat(
-            messages=[
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=user_prompt)
-            ],
-            max_tokens=self.config.max_tokens,
-            temperature=0.7
+        # 使用 SummaryService 生成总结
+        return await self.summary_service.generate_summary(
+            group_id=messages[0].group_id if messages else 0,
+            since=since,
+            window_display=window_display,
+            custom_persona=custom_persona,
+            max_messages=100
         )
-        
-        # 使用 QQ 友好的格式包装总结
-        header = f"✨ {window_display}群聊小结 ✨"
-        separator = "─" * 12
-        return f"{header}\n{separator}\n{response.content}\n{separator}"
     
     async def _handle_stats(
         self,

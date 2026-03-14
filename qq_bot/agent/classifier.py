@@ -8,7 +8,7 @@ import re
 from typing import Any, Optional
 
 from qq_bot.agent.intents import IntentResult, IntentType
-from qq_bot.agent.prompts import IntentKeywords, IntentPrompts
+from qq_bot.agent.prompts import IntentPrompts
 from qq_bot.core.exceptions import IntentError, LLMError
 from qq_bot.services.llm.base import ChatMessage, LLMService
 from qq_bot.utils.debug_logger import log_llm_context, log_compact_debug

@@ -50,23 +50,26 @@ class ConversationManager:
     管理群聊中每个人的对话上下文，支持持久化到 SQLite 数据库。
     
     Attributes:
-        max_context: 最大上下文消息数。
+        max_context: 最大对话轮数（1轮 = 1 user + 1 assistant）。
         db_path: 数据库文件路径。
     
     Example:
-        >>> manager = ConversationManager(max_context=5)
+        >>> manager = ConversationManager(max_context=10)  # 保留10轮对话
         >>> manager.add_message(123456, 789012, "user", "你好", "用户")
         >>> context = manager.get_context(123456, 789012)
     """
     
-    def __init__(self, max_context: int = 5, db_path: Optional[Path] = None):
+    def __init__(self, max_context: int = 10, db_path: Optional[Path] = None):
         """初始化对话管理器。
         
         Args:
-            max_context: 上下文最多保留的消息条数。
+            max_context: 上下文最多保留的对话轮数（1轮 = user + assistant 各1条）。
+                        例如：max_context=10 表示最多保留 20 条消息（10轮）。
             db_path: 数据库文件路径，默认为 data/chat_history.db。
         """
+        # max_context 表示轮数，但 deque 限制的是消息条数，所以乘以 2
         self.max_context = max_context
+        self._max_messages = max_context * 2  # 每轮包含 user + assistant 两条消息
         self.contexts: Dict[Tuple[int, int], deque] = {}
         self.custom_prompts: Dict[Tuple[int, int], str] = {}
         self._lock = threading.Lock()
@@ -107,7 +110,7 @@ class ConversationManager:
         """从数据库加载历史记录。"""
         try:
             db = get_db_manager(self.db_path)
-            max_storage = self.max_context * 10
+            max_storage = self._max_messages * 10  # 存储比运行时多10倍的历史
             
             # 加载对话历史
             rows = db.fetchall("SELECT * FROM chat_contexts")
@@ -122,7 +125,7 @@ class ConversationManager:
                         messages = messages[-max_storage:]
                     
                     self.contexts[(group_id, user_id)] = deque(
-                        messages, maxlen=self.max_context
+                        messages, maxlen=self._max_messages
                     )
                 except Exception as e:
                     print(f"[!] 加载聊天记录失败 ({row.get('group_id')},{row.get('user_id')}): {e}")
@@ -146,7 +149,7 @@ class ConversationManager:
         """保存历史记录到数据库。"""
         try:
             db = get_db_manager(self.db_path)
-            max_storage = self.max_context * 10
+            max_storage = self._max_messages * 10  # 存储比运行时多10倍的历史
             
             # 保存对话历史
             for (group_id, user_id), messages in self.contexts.items():
@@ -182,7 +185,7 @@ class ConversationManager:
         key = (group_id, user_id)
         with self._lock:
             if key not in self.contexts:
-                self.contexts[key] = deque(maxlen=self.max_context)
+                self.contexts[key] = deque(maxlen=self._max_messages)
             return list(self.contexts[key])
     
     def add_message(
@@ -205,7 +208,7 @@ class ConversationManager:
         key = (group_id, user_id)
         with self._lock:
             if key not in self.contexts:
-                self.contexts[key] = deque(maxlen=self.max_context)
+                self.contexts[key] = deque(maxlen=self._max_messages)
             
             self.contexts[key].append({
                 "role": role,
@@ -308,7 +311,8 @@ class ConversationManager:
         if not context:
             return "暂无对话历史"
         
-        lines = [f"【对话历史】共{len(context)}条", "-" * 20]
+        rounds = len(context) // 2  # 计算对话轮数（每2条消息算1轮）
+        lines = [f"【对话历史】共{rounds}轮（{len(context)}条）", "-" * 20]
         for i, msg in enumerate(context[-max_messages:], 1):
             nickname = msg.get("nickname", "未知")[:8]
             content = msg["content"][:20]

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from qq_bot.core.config import BotConfig
 from qq_bot.services.daily_summary import DailySummaryScheduler, DailySummaryConfig
+from qq_bot.services.summary_service import SummaryService
 from qq_bot.services.storage.message import MessageStore
 from qq_bot.services.llm.deepseek import DeepSeekService
 
@@ -44,7 +45,6 @@ async def test_daily_summary_scheduler():
     config = DailySummaryConfig(
         enabled=True,
         group_id=123456,
-        max_tokens=4000,
         hour=23,
         minute=0
     )
@@ -52,7 +52,6 @@ async def test_daily_summary_scheduler():
     print(f"[*] 配置信息:")
     print(f"    enabled: {config.enabled}")
     print(f"    group_id: {config.group_id}")
-    print(f"    max_tokens: {config.max_tokens}")
     print(f"    time: {config.hour:02d}:{config.minute:02d}")
     
     # 创建模拟适配器
@@ -81,8 +80,8 @@ async def test_daily_summary_scheduler():
         )
     print(f"[*] 已添加 10 条测试消息")
     
-    # 尝试创建 LLM 服务
-    llm_service = None
+    # 尝试创建 LLM 服务和 SummaryService
+    summary_service = None
     try:
         api_key = os.getenv("DEEPSEEK_API_KEY", "")
         if not api_key:
@@ -92,18 +91,22 @@ async def test_daily_summary_scheduler():
         
         if api_key:
             llm_service = DeepSeekService(api_key=api_key)
-            print(f"[*] LLM 服务已初始化")
+            summary_service = SummaryService(
+                llm_service=llm_service,
+                message_store=message_store,
+                config=bot_config
+            )
+            print(f"[*] SummaryService 已初始化")
         else:
             print("[!] 未找到 API Key，跳过 LLM 测试")
     except Exception as e:
-        print(f"[!] LLM 服务初始化失败: {e}")
+        print(f"[!] SummaryService 初始化失败: {e}")
     
     # 创建调度器
     scheduler = DailySummaryScheduler(
         config=config,
         adapter=adapter,
-        llm_service=llm_service,
-        message_store=message_store
+        summary_service=summary_service
     )
     
     print("\n[*] 调度器初始化成功")
@@ -124,10 +127,15 @@ async def test_daily_summary_scheduler():
     print("测试 3: 总结生成")
     print("=" * 60)
     
-    if llm_service:
-        print("[*] 调用 LLM 生成总结...")
+    if summary_service:
+        print("[*] 调用 SummaryService 生成总结...")
         try:
-            summary = await scheduler._generate_summary()
+            import time
+            summary = await summary_service.generate_summary(
+                group_id=123456,
+                since=time.time() - 86400,
+                window_display="过去24小时"
+            )
             print(f"[*] 生成成功！长度: {len(summary)} 字符")
             print(f"\n[*] 总结内容预览:")
             print("-" * 40)
@@ -138,7 +146,7 @@ async def test_daily_summary_scheduler():
             import traceback
             traceback.print_exc()
     else:
-        print("[!] 跳过测试（LLM 服务不可用）")
+        print("[!] 跳过测试（SummaryService 不可用）")
         # 测试无 LLM 时的消息获取
         print("[*] 测试消息获取功能...")
         import time
@@ -189,7 +197,7 @@ async def test_config_loading():
         print(f"    daily_summary.group_id: {config.daily_summary.group_id}")
         print(f"    daily_summary.hour: {config.daily_summary.hour}")
         print(f"    daily_summary.minute: {config.daily_summary.minute}")
-        print(f"    daily_summary.max_tokens: {config.daily_summary.max_tokens}")
+        print(f"    summary.max_tokens: {config.summary.max_tokens}")
     except Exception as e:
         print(f"[!] 配置加载失败: {e}")
 

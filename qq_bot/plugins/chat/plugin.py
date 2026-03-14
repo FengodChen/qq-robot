@@ -26,16 +26,17 @@ class ChatPlugin(Plugin):
     
     提供 AI 聊天功能，支持：
     - 群聊和私聊消息处理
-    - 人设定制（/setprompt, /getprompt, /reset）
-    - 好感度系统（/affection）
-    - 对话上下文管理（/history, /clean）
-    - 帮助命令（/help, /ping）
+    - 人设定制（更改人设、查看人设、恢复默认）
+    - 好感度系统
+    - 对话上下文管理（清除历史、查看历史）
+    - 帮助系统
+    
+    所有指令通过 LLM 进行意图识别，支持自然语言表达。
     
     Attributes:
         conversation: 对话上下文管理器。
         persona: 人设管理器。
         affection: 好感度管理器。
-        commands: 命令处理器映射。
     
     Example:
         >>> plugin = ChatPlugin(ctx)
@@ -58,18 +59,26 @@ class ChatPlugin(Plugin):
         # 优先从嵌套的 chat 配置读取，兼容旧版直接读取
         chat_config = getattr(ctx.config, "chat", None)
         if chat_config:
-            self.max_context = getattr(chat_config, "max_context", 5)
             self.max_output_tokens = getattr(chat_config, "max_output_tokens", 300)
             self.max_input_tokens = getattr(chat_config, "max_input_tokens", 100)
             self.group_context_messages = getattr(chat_config, "group_context_messages", 10)
             self.system_prompt = getattr(chat_config, "system_prompt", "")
         else:
             # 兼容旧版配置
-            self.max_context = getattr(ctx.config, "max_context", 5)
             self.max_output_tokens = getattr(ctx.config, "max_output_tokens", 300)
             self.max_input_tokens = getattr(ctx.config, "max_input_tokens", 100)
             self.group_context_messages = getattr(ctx.config, "group_context_messages", 10)
             self.system_prompt = getattr(ctx.config, "system_prompt", "")
+        
+        # max_context 现在表示"对话轮数"，每轮包含 user + assistant 两条消息
+        # 从 storage 配置读取（新版配置结构）
+        storage_config = getattr(ctx.config, "storage", None)
+        if storage_config:
+            # 配置的是轮数，但 ConversationManager 需要消息条数，所以乘以 2
+            self.max_context = getattr(storage_config, "conversation_max_context", 10)
+        else:
+            # 兼容旧版配置
+            self.max_context = getattr(ctx.config, "max_context", 10)
         
         self.debug_mode = getattr(ctx.config, "debug", None)
         if self.debug_mode:
@@ -81,18 +90,6 @@ class ChatPlugin(Plugin):
         self.conversation = ConversationManager(max_context=self.max_context)
         self.persona = PersonaManager(default_prompt=self.system_prompt)
         self.affection = AffectionManager(llm_service=self.llm)
-        
-        # 命令处理器
-        self.commands: Dict[str, Tuple[str, callable]] = {
-            "/help": ("显示帮助菜单", self._cmd_help),
-            "/ping": ("测试连通性", self._cmd_ping),
-            "/clean": ("清除对话历史", self._cmd_clean),
-            "/history": ("显示对话历史", self._cmd_history),
-            "/setprompt": ("更改人设", self._cmd_setprompt),
-            "/getprompt": ("查看当前人设", self._cmd_getprompt),
-            "/reset": ("恢复默认人设", self._cmd_reset),
-            "/affection": ("查看好感度", self._cmd_affection),
-        }
         
         # 等待人设设置的状态
         self._pending_prompts: Dict[Tuple[int, int], bool] = {}
@@ -122,6 +119,8 @@ class ChatPlugin(Plugin):
     async def on_message(self, ctx: Context, event: MessageEvent) -> Optional[ResponseEvent]:
         """处理消息事件。
         
+        所有消息通过 Agent 意图分类器处理，统一使用 LLM 进行意图识别。
+        
         Args:
             ctx: 请求上下文。
             event: 消息事件。
@@ -131,16 +130,12 @@ class ChatPlugin(Plugin):
         """
         content = event.content.strip()
         
-        # 处理命令
-        if content.startswith("/"):
-            return await self._handle_command(content, event)
-        
         # 检查是否在等待人设设置
         key = (event.group_id, event.user_id)
         if key in self._pending_prompts:
             return await self._handle_set_persona(event)
         
-        # 处理普通消息
+        # 处理普通消息（命令和自然语言指令都通过 Agent 意图分类器处理）
         return await self._handle_chat(event)
     
     async def on_group_message(self, ctx: Context, event: MessageEvent) -> Optional[ResponseEvent]:
@@ -236,64 +231,7 @@ class ChatPlugin(Plugin):
         # 默认作为普通聊天处理
         return await self._handle_chat(event)
     
-    async def _handle_command(self, content: str, event: MessageEvent) -> Optional[ResponseEvent]:
-        """处理命令。
-        
-        Args:
-            content: 消息内容。
-            event: 消息事件。
-        
-        Returns:
-            响应事件。
-        """
-        # 提取命令和参数
-        parts = content.split(maxsplit=1)
-        cmd = parts[0].lower()
-        
-        if cmd in self.commands:
-            _, handler = self.commands[cmd]
-            return await handler(event, parts[1] if len(parts) > 1 else "")
-        
-        # 处理自然语言命令
-        return await self._handle_natural_command(content, event)
-    
-    async def _handle_natural_command(self, content: str, event: MessageEvent) -> Optional[ResponseEvent]:
-        """处理自然语言命令。
-        
-        Args:
-            content: 消息内容。
-            event: 消息事件。
-        
-        Returns:
-            响应事件。
-        """
-        content_lower = content.lower()
-        
-        # 清除历史
-        if any(kw in content_lower for kw in ["清除历史", "清理历史", "清空记录"]):
-            return await self._cmd_clean(event, "")
-        
-        # 查看历史
-        if any(kw in content_lower for kw in ["查看历史", "历史记录", "对话历史"]):
-            return await self._cmd_history(event, "")
-        
-        # 更改人设
-        if any(kw in content_lower for kw in ["更改人设", "设置人设", "新人设"]):
-            return await self._cmd_setprompt(event, "")
-        
-        # 查看人设
-        if any(kw in content_lower for kw in ["查看人设", "当前人设", "我的人设"]):
-            return await self._cmd_getprompt(event, "")
-        
-        # 重置人设
-        if any(kw in content_lower for kw in ["恢复默认", "重置人设", "恢复人设"]):
-            return await self._cmd_reset(event, "")
-        
-        # 查看好感度
-        if any(kw in content_lower for kw in ["好感度", "亲密度", "喜欢程度"]):
-            return await self._cmd_affection(event, "")
-        
-        return None
+
     
     async def _handle_set_persona_intent(self, event: MessageEvent) -> Optional[ResponseEvent]:
         """处理设置人设意图（Agent 意图分类后调用）。
@@ -1155,13 +1093,26 @@ class ChatPlugin(Plugin):
         Returns:
             响应事件。
         """
-        help_text = "【小音理的帮助菜单】\n"
-        help_text += "-" * 15 + "\n"
-        for cmd, (desc, _) in self.commands.items():
-            help_text += f"{cmd} - {desc}\n"
-        help_text += "-" * 15 + "\n"
-        help_text += "也可以直接说:\n"
-        help_text += "更改人设/清除历史/查看历史"
+        help_text = """【小音理的帮助菜单】
+你可以直接对我说：
+
+【人设相关】
+· "更改人设成xxx" - 修改我的人设
+· "查看人设" - 看当前人设
+· "恢复默认" - 恢复默认人设
+
+【对话管理】
+· "清除历史" - 清除对话记录
+· "查看历史" - 看最近对话
+
+【好感度系统】
+· "好感度" - 查看我们的关系值
+
+【总结功能】
+· "总结一下" - 总结最近1小时的聊天
+· "总结今天的聊天" - 支持自然语言表达时间
+
+我会理解你的自然语言指令，直接说出来就好~"""
         
         return ResponseEvent(
             content=help_text,
@@ -1267,10 +1218,10 @@ class ChatPlugin(Plugin):
         
         if custom_prompt:
             preview = custom_prompt[:100] + "..." if len(custom_prompt) > 100 else custom_prompt
-            msg = f"【当前人设】(自定义)\n{preview}\n\n使用 /reset 恢复默认人设"
+            msg = f"【当前人设】(自定义)\n{preview}\n\n对我说「恢复默认」可以恢复默认人设"
         else:
             default = self.system_prompt[:100] + "..." if len(self.system_prompt) > 100 else self.system_prompt
-            msg = f"【当前人设】(默认)\n{default}\n\n使用 /setprompt 更改人设"
+            msg = f"【当前人设】(默认)\n{default}\n\n对我说「更改人设成xxx」可以修改人设"
         
         return ResponseEvent(
             content=msg,

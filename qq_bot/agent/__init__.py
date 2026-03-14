@@ -16,7 +16,7 @@ Example:
 
 from qq_bot.agent.intents import IntentResult, IntentType
 from qq_bot.agent.classifier import IntentClassifier
-from qq_bot.agent.prompts import IntentKeywords, IntentPrompts
+from qq_bot.agent.prompts import IntentPrompts
 
 __all__ = [
     # 意图类型
@@ -24,7 +24,6 @@ __all__ = [
     "IntentResult",
     # 分类器
     "IntentClassifier",
-    # Prompt 和关键词
-    "IntentKeywords",
+    # Prompt 模板
     "IntentPrompts",
 ]

@@ -80,13 +80,16 @@ class SummaryPluginConfig(BaseModel):
 
 
 class DailySummaryConfig(BaseModel):
-    """每日总结配置。"""
+    """每日总结配置。
+    
+    注意：max_tokens 已移至 summary.max_tokens，此处保留仅用于兼容旧配置。
+    """
     
     enabled: bool = False
     group_id: int = 0
-    max_tokens: int = 4000
     hour: int = 23
     minute: int = 0
+    # max_tokens 已弃用，使用 summary.max_tokens
 
 
 class NewsConfig(BaseModel):
@@ -281,14 +284,22 @@ class BotConfig(BaseSettings):
             daily_config["enabled"] = data.pop("daily_summary_enabled")
         if "daily_summary_group_id" in data:
             daily_config["group_id"] = data.pop("daily_summary_group_id")
-        if "daily_summary_max_tokens" in data:
-            daily_config["max_tokens"] = data.pop("daily_summary_max_tokens")
         if "daily_summary_hour" in data:
             daily_config["hour"] = data.pop("daily_summary_hour")
         if "daily_summary_minute" in data:
             daily_config["minute"] = data.pop("daily_summary_minute")
         if daily_config:
             migrated["daily_summary"] = daily_config
+        
+        # daily_summary_max_tokens 已弃用，迁移到 summary.max_tokens
+        if "daily_summary_max_tokens" in data:
+            old_value = data.pop("daily_summary_max_tokens")
+            # 限制最大值，避免 API 错误
+            new_value = min(old_value, 4096)
+            if old_value != new_value:
+                print(f"[!] 警告: daily_summary_max_tokens ({old_value}) 超过 API 限制，已调整为 {new_value}")
+            migrated.setdefault("summary", {})["max_tokens"] = new_value
+            print(f"[!] 注意: daily_summary_max_tokens 已弃用，请使用 summary.max_tokens")
         
         # 新闻配置
         news_config = {}
