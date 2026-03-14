@@ -10,6 +10,7 @@ import requests
 
 from qq_bot.services.llm.base import LLMService, ChatMessage, ChatResponse
 from qq_bot.core.exceptions import LLMError
+from qq_bot.utils.debug_logger import log_llm_context
 
 
 class DeepSeekService(LLMService):
@@ -32,6 +33,7 @@ class DeepSeekService(LLMService):
         model: str = DEFAULT_MODEL,
         base_url: Optional[str] = None,
         timeout: int = 60,
+        debug: bool = False,
         **kwargs
     ):
         """初始化 DeepSeek 服务。
@@ -41,14 +43,18 @@ class DeepSeekService(LLMService):
             model: 模型名称。
             base_url: API 基础 URL。
             timeout: 请求超时时间。
+            debug: 是否启用调试模式，启用时会输出完整上下文。
         """
         super().__init__(api_key, model, **kwargs)
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.timeout = timeout
+        self.debug = debug
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+    
+
     
     def _format_messages(self, messages: List[ChatMessage]) -> List[Dict[str, str]]:
         """格式化消息为 API 格式。"""
@@ -69,6 +75,10 @@ class DeepSeekService(LLMService):
         **kwargs
     ) -> ChatResponse:
         """非流式聊天。"""
+        # Debug 输出完整上下文
+        if self.debug:
+            log_llm_context("LLM 聊天上下文", messages, model=self.model)
+        
         payload = {
             "model": self.model,
             "messages": self._format_messages(messages),
@@ -133,6 +143,10 @@ class DeepSeekService(LLMService):
         **kwargs
     ) -> AsyncIterator[str]:
         """流式聊天。"""
+        # Debug 输出完整上下文
+        if self.debug:
+            log_llm_context("LLM 流式上下文", messages, model=self.model)
+        
         payload = {
             "model": self.model,
             "messages": self._format_messages(messages),

@@ -27,6 +27,7 @@ from qq_bot.services.llm.base import LLMService
 from qq_bot.services.llm.deepseek import DeepSeekService
 from qq_bot.services.storage.message import MessageStore
 from qq_bot.services.daily_summary import DailySummaryScheduler, DailySummaryConfig
+from qq_bot.utils.debug_logger import log_compact_debug
 
 
 class Application:
@@ -176,6 +177,7 @@ class Application:
                     base_url=self.config.llm.base_url,
                     timeout=self.config.llm.timeout,
                     max_retries=self.config.llm.max_retries,
+                    debug=self.config.debug.enabled,
                 )
                 print(f"[*] LLM 服务已初始化: {self.config.llm.provider}")
             else:
@@ -292,7 +294,7 @@ class Application:
             
         except Exception as e:
             if self.config.debug.enabled:
-                print(f"[DEBUG] 获取用户信息失败: {e}")
+                log_compact_debug("获取用户信息失败", error=str(e))
             return {'sex': 'unknown', 'nickname': '未知', 'card': '', 'timestamp': now}
     
     async def run(self) -> None:
@@ -422,6 +424,29 @@ class Application:
             event: 消息事件。
         """
         try:
+            # 0. 获取完整的用户信息（包括性别）并更新事件
+            user_info = await self._get_user_info(event.group_id, event.user_id)
+            if user_info['sex'] != 'unknown' or user_info['nickname'] != '未知':
+                # 更新 sender 信息
+                updated_sender = dict(event.sender)
+                if user_info['sex'] != 'unknown':
+                    updated_sender['sex'] = user_info['sex']
+                if user_info['nickname'] != '未知':
+                    updated_sender['nickname'] = user_info['nickname']
+                if user_info.get('card'):
+                    updated_sender['card'] = user_info['card']
+                # 创建新的事件对象（dataclass 是 frozen 的，需要重建）
+                event = MessageEvent(
+                    message_type=event.message_type,
+                    user_id=event.user_id,
+                    group_id=event.group_id,
+                    content=event.content,
+                    raw_message=event.raw_message,
+                    sender=updated_sender,
+                    message_id=event.message_id,
+                    timestamp=event.timestamp
+                )
+            
             # 1. 存储消息（所有消息都存储）
             if self._message_store:
                 self._store_message(event)
@@ -442,7 +467,9 @@ class Application:
             )
             
             if self.config.debug.enabled:
-                print(f"[DEBUG] 意图识别: {intent_result.intent.value} (置信度: {intent_result.confidence:.2f})")
+                log_compact_debug("意图识别结果",
+                                  intent=intent_result.intent.value,
+                                  confidence=f"{intent_result.confidence:.2f}")
             
             # 转换为 IntentEvent
             intent_event = IntentEvent(
@@ -484,7 +511,7 @@ class Application:
             )
         except Exception as e:
             if self.config.debug.enabled:
-                print(f"[DEBUG] 存储消息失败: {e}")
+                log_compact_debug("存储消息失败", error=str(e))
     
     async def _route_event(
         self, 
@@ -514,11 +541,19 @@ class Application:
             if summary_plugin:
                 try:
                     if event.is_group:
-                        return await summary_plugin.on_group_message(self.ctx, event)
+                        response = await summary_plugin.on_group_message(self.ctx, event)
                     else:
-                        return await summary_plugin.on_private_message(self.ctx, event)
+                        response = await summary_plugin.on_private_message(self.ctx, event)
+                    if response:
+                        return response
+                    else:
+                        print("[!] Summary 插件返回空响应")
                 except Exception as e:
                     print(f"[!] Summary 插件处理失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("[!] Summary 插件未加载")
             # 如果插件不可用，使用内置处理器
             return await self._handle_summarize(event, intent_event)
         

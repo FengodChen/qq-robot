@@ -152,6 +152,22 @@ def parse_natural_time(message: str) -> Tuple[int | None, str]:
     """
     message = message.lower()
     
+    # 中文数字映射
+    chinese_numbers = {
+        '半': 0.5,
+        '一': 1,
+        '二': 2,
+        '两': 2,
+        '三': 3,
+        '四': 4,
+        '五': 5,
+        '六': 6,
+        '七': 7,
+        '八': 8,
+        '九': 9,
+        '十': 10,
+    }
+    
     # 匹配模式：X分钟/小时/天
     patterns = [
         # 数字+单位
@@ -159,17 +175,18 @@ def parse_natural_time(message: str) -> Tuple[int | None, str]:
         (r"(\d+(?:\.\d+)?)\s*(小时|时|h|hr|hour)", 3600),
         (r"(\d+(?:\.\d+)?)\s*(天|日|d|day)", 86400),
         # 中文数字+单位
-        (r"(半)\s*(小时|时)", 1800),
-        (r"一\s*(小时|时)", 3600),
-        (r"两\s*(小时|时)", 7200),
+        (r"(半|一|二|两|三|四|五|六|七|八|九|十)\s*(小时|时)", 3600),
+        (r"(半|一|二|两|三|四|五|六|七|八|九|十)\s*(天|日)", 86400),
+        (r"(半|一|二|两|三|四|五|六|七|八|九|十)\s*(分钟|分)", 60),
     ]
     
     for pattern, multiplier in patterns:
         match = re.search(pattern, message)
         if match:
             value_str = match.group(1)
-            if value_str == "半":
-                value = 0.5
+            # 先尝试中文数字映射
+            if value_str in chinese_numbers:
+                value = chinese_numbers[value_str]
             else:
                 try:
                     value = float(value_str)

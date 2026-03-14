@@ -146,7 +146,7 @@ class AffectionManager:
             llm_service: LLM 服务实例，用于生成人设喜好/雷点和评估好感度。
         """
         if db_path is None:
-            db_path = Path(__file__).parent.parent.parent / "data" / "affection_data.db"
+            db_path = Path("data") / "affection_data.db"
         
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

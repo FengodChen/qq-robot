@@ -14,6 +14,7 @@ from qq_bot.core.context import Context
 from qq_bot.core.events import MessageEvent, ResponseEvent
 from qq_bot.services.llm.base import LLMService, ChatMessage
 from qq_bot.services.storage.message import MessageStore, get_message_store
+from qq_bot.utils.debug_logger import log_llm_context, log_compact_debug
 
 from qq_bot.plugins.chat.conversation import ConversationManager
 from qq_bot.plugins.chat.persona import PersonaManager, PersonaConfig
@@ -459,7 +460,7 @@ class ChatPlugin(Plugin):
             ]
             
             if self.debug_mode:
-                print(f"[DEBUG] LLM 人设提取请求: {message}")
+                log_compact_debug("人设提取", request=message[:50])
             
             response = await self.llm.chat(
                 messages=messages,
@@ -477,7 +478,7 @@ class ChatPlugin(Plugin):
                 if result.get('success') and result.get('persona_text'):
                     extracted = result.get('persona_text', '').strip()
                     if self.debug_mode:
-                        print(f"[DEBUG] LLM 人设提取结果: {extracted}")
+                        log_compact_debug("人设提取结果", result=extracted[:50])
                     return extracted
                     
         except Exception as e:
@@ -576,6 +577,10 @@ class ChatPlugin(Plugin):
             # 2. 构建消息列表（包含好感度变化信息）
             messages = await self._build_messages(event, change, change_reason)
             
+            # Debug 输出完整上下文
+            if self.debug_mode:
+                log_llm_context("聊天插件上下文", messages)
+            
             # 3. 调用 LLM 生成回复
             response = await self.llm.chat(
                 messages=messages,
@@ -641,11 +646,15 @@ class ChatPlugin(Plugin):
             print(f"[*] 首次使用此人设，正在生成喜好/雷点配置...")
             preferences = await self.affection.generate_persona_preferences(persona_text)
         
-        # 使用 LLM 评估好感度变化（只基于用户消息）
+        # 获取对话历史（最近5条）
+        conversation_history = self.conversation.get_context(event.group_id, event.user_id)
+        
+        # 使用 LLM 评估好感度变化（结合对话上下文）
         change, reason = await self._evaluate_affection_with_llm_for_user_message(
             user_message=event.content,
             persona_text=persona_text,
-            current_affection=current_value
+            current_affection=current_value,
+            conversation_history=conversation_history
         )
         
         if self.debug_mode:
@@ -658,7 +667,8 @@ class ChatPlugin(Plugin):
         self,
         user_message: str,
         persona_text: str,
-        current_affection: int
+        current_affection: int,
+        conversation_history: List[Dict] = None
     ) -> Tuple[int, str]:
         """使用 LLM 评估用户消息对好感度的影响。
         
@@ -666,6 +676,7 @@ class ChatPlugin(Plugin):
             user_message: 用户消息。
             persona_text: 当前人设文本。
             current_affection: 当前好感度值。
+            conversation_history: 对话历史记录。
         
         Returns:
             (变化值, 原因)。变化值范围为 -5 到 +5。
@@ -687,8 +698,44 @@ class ChatPlugin(Plugin):
                 }
             )
         
+        # 获取关系等级描述
+        level = self.affection.get_affection_level(current_affection)
+        level_descriptions = {
+            "死敌": "你们是死敌关系，彼此憎恨",
+            "憎恨": "你憎恨这个用户",
+            "厌恶": "你厌恶这个用户",
+            "反感": "你对这个用户有反感",
+            "疏离": "你们关系疏离，有距离感",
+            "陌生": "你们刚刚认识，彼此还不太了解",
+            "初识": "有过几次简单交流，正在互相了解",
+            "熟悉": "比较了解彼此，关系比较自然",
+            "友好": "关系不错的朋友，相处融洽",
+            "亲密": "很亲近的关系，彼此信任",
+            "至交": "非常重要的关系，如同至交好友",
+            "灵魂伴侣": "灵魂交融的关系，彼此是唯一的存在"
+        }
+        level_desc = level_descriptions.get(level, "关系状态未知")
+        
+        # 格式化对话历史（取最近5条，不包括当前消息）
+        history_text = ""
+        if conversation_history:
+            recent_history = conversation_history[-5:]  # 最近5条
+            history_lines = []
+            for msg in recent_history:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "user":
+                    history_lines.append(f"用户: {content}")
+                elif role == "assistant":
+                    history_lines.append(f"你: {content}")
+            if history_lines:
+                history_text = "\n".join(history_lines)
+        
+        if not history_text:
+            history_text = "（暂无对话历史）"
+        
         try:
-            system_prompt = f"""你是一个好感度评估助手。请根据用户的消息和当前人设，评估这条消息对好感度的影响。
+            system_prompt = f"""你是一个好感度评估助手。请根据对话上下文评估用户消息对好感度的影响。
 
 【当前人设】
 {persona_text}
@@ -698,33 +745,39 @@ class ChatPlugin(Plugin):
 - 特别喜欢: {', '.join(preferences.favorite_things)}
 - 雷点/讨厌: {', '.join(preferences.dislikes)}
 
+【当前关系状态】
+- 关系等级: {level}（{current_affection}/100）
+- 状态描述: {level_desc}
+
 【评估规则】
 1. 好感度变化范围: -5 到 +5
 2. 评估标准:
-   +5: 极度感动/被深深打动（如：救了角色、深情的告白、极其贴心的行为）
-   +3~+4: 非常愉快/被关心（如：聊到特别喜欢的事物、收到礼物、被夸奖）
-   +1~+2: 比较愉快/友好（如：礼貌问候、正常交流、轻微关心）
-   0: 中性（普通对话，无明显情绪波动）
-   -1~-2: 轻微不悦（如：语气冷淡、轻微冒犯、触及轻微雷点）
-   -3~-4: 明显不悦（如：触及雷点、语气恶劣、让人不舒服）
-   -5: 极度愤怒/伤心（如：严重侮辱、恶意攻击、触及底线）
-
-3. 考虑因素:
-   - 是否触及人设的喜好/雷点
-   - 用户语气是否友善/恶劣
-   - 当前好感度水平（高好感度时更容易获得好感）
-   - 对话的情感价值
+   +5: 极度感动/被深深打动
+   +3~+4: 非常愉快/被关心
+   +1~+2: 比较愉快/友好
+   0: 中性（普通对话）
+   -1~-2: 轻微不悦
+   -3~-4: 明显不悦
+   -5: 极度愤怒/伤心
 
 【输出格式】
-只返回 JSON 格式，不要有任何其他说明：
+只返回 JSON 格式：
 {{
   "change": 变化值(-5到5),
-  "reason": "变化原因（简洁描述，10字以内）"
+  "reason": "变化原因（10字以内）"
 }}"""
+            
+            user_prompt = f"""【对话历史】
+{history_text}
+
+【用户最新消息】
+{user_message}
+
+请结合以上对话历史和当前关系状态，评估这条最新消息对好感度的影响。"""
             
             messages = [
                 ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=f"用户消息: {user_message}\n当前好感度: {current_affection}")
+                ChatMessage(role="user", content=user_prompt)
             ]
             
             response = await self.llm.chat(
@@ -737,7 +790,7 @@ class ChatPlugin(Plugin):
             content = response.content.strip()
             
             if self.debug_mode:
-                print(f"[DEBUG] LLM 好感度评估原始响应: {content[:200]}...")
+                log_compact_debug("好感度评估响应", content=content[:200])
             
             # 尝试多种方式解析 JSON
             result = None
@@ -750,7 +803,6 @@ class ChatPlugin(Plugin):
             
             # 方式2: 使用正则表达式提取 JSON 对象
             if result is None:
-                # 匹配 {...} 结构（包括嵌套）
                 json_match = re.search(r'\{[\s\S]*?\}', content)
                 if json_match:
                     try:
@@ -772,7 +824,6 @@ class ChatPlugin(Plugin):
                 change = max(-5, min(5, result.get("change", 0)))
                 reason = result.get("reason", "评估完成")
                 if not reason or reason == "评估完成":
-                    # 尝试其他可能的字段名
                     reason = result.get("reasoning", result.get("cause", result.get("explanation", "评估完成")))
                 return change, reason
             
@@ -1044,9 +1095,9 @@ class ChatPlugin(Plugin):
         # 格式化原因（限制长度）
         display_reason = reason[:15] + "..." if len(reason) > 15 else reason
         
-        affection_line = f"\n\n────────────\n💕 好感度：{level}（{current_value}/100） {change_emoji}{change_text}"
+        affection_line = f"\n\n────────────\n💕 {level}（{current_value}/100） {change_emoji}{change_text}"
         if change != 0:
-            affection_line += f"\n╰─ 原因：{display_reason}"
+            affection_line += f"\n╰─ {display_reason}"
         
         return reply + affection_line
     
@@ -1089,6 +1140,8 @@ class ChatPlugin(Plugin):
         # 简单估算：中文1字≈1token，英文1词≈1token
         length = len(content)
         return length <= self.max_input_tokens * 3  # 粗略估算
+    
+
     
     # ========== 命令处理器 ==========
     

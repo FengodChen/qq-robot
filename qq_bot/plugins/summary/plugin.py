@@ -48,7 +48,11 @@ class SummaryPlugin(Plugin):
         )
     
     async def on_message(self, ctx: Context, event: MessageEvent) -> ResponseEvent | None:
-        """处理总结相关消息。"""
+        """处理总结相关消息。
+        
+        注意：当消息被路由到 SummaryPlugin 时，意图分类器已经确认这是总结请求，
+        因此不需要再次进行关键词检查，直接调用自然语言处理方法即可。
+        """
         content = event.content.strip()
         
         # 检查是否是总结命令
@@ -58,16 +62,9 @@ class SummaryPlugin(Plugin):
         if content.startswith("/stats") or content.startswith("/统计"):
             return await self._handle_stats(ctx, event)
         
-        # 检查自然语言总结请求
-        if self._is_summary_request(content):
-            return await self._handle_natural_summary(ctx, event)
-        
-        return None
-    
-    def _is_summary_request(self, content: str) -> bool:
-        """检查是否是总结请求。"""
-        keywords = ["总结一下", "概括", "摘要", "汇总"]
-        return any(kw in content for kw in keywords)
+        # 直接处理自然语言总结请求
+        # 意图分类器已经确认这是总结请求，parse_natural_time 会解析时间参数
+        return await self._handle_natural_summary(ctx, event)
     
     async def _handle_summary(
         self,
@@ -130,15 +127,19 @@ class SummaryPlugin(Plugin):
         event: MessageEvent
     ) -> ResponseEvent:
         """处理自然语言总结请求。"""
+        print(f"[*] SummaryPlugin: 开始处理自然语言总结请求: {event.content[:50]}...")
+        
         # 解析时间
         seconds, display = parse_natural_time(event.content)
         if seconds is None:
             seconds = self.config.default_window_seconds
             display = format_duration(seconds)
+        print(f"[*] SummaryPlugin: 解析时间窗口: {display} ({seconds}秒)")
         
         # 检查范围
         max_seconds = self.config.max_window_days * 86400
         if seconds > max_seconds:
+            print(f"[*] SummaryPlugin: 时间范围过大")
             return ResponseEvent(
                 content=f"❌ 你想总结{display}的聊天记录？太久了呢~最多只能总结最近{self.config.max_window_days}天的内容！",
                 target_user_id=event.user_id,
@@ -148,6 +149,7 @@ class SummaryPlugin(Plugin):
         # 获取消息
         since = time.time() - seconds
         store = ctx.services.message_store
+        print(f"[*] SummaryPlugin: 获取消息 since={since}, group_id={event.group_id}, user_id={event.user_id}")
         
         if event.is_group:
             messages = store.get_messages_since(
@@ -160,20 +162,33 @@ class SummaryPlugin(Plugin):
                 user_id=event.user_id
             )
         
+        print(f"[*] SummaryPlugin: 获取到 {len(messages)} 条消息")
+        
         if not messages:
+            print(f"[*] SummaryPlugin: 无消息记录，返回提示")
             return ResponseEvent(
                 content=f"过去{display}没有聊天记录呢~",
                 target_user_id=event.user_id,
                 target_group_id=event.group_id
             )
         
-        summary = await self._generate_summary(ctx, messages, display)
-        
-        return ResponseEvent(
-            content=summary,
-            target_user_id=event.user_id,
-            target_group_id=event.group_id
-        )
+        try:
+            summary = await self._generate_summary(ctx, messages, display)
+            print(f"[*] SummaryPlugin: 总结生成完成，长度={len(summary)}")
+            return ResponseEvent(
+                content=summary,
+                target_user_id=event.user_id,
+                target_group_id=event.group_id
+            )
+        except Exception as e:
+            print(f"[!] SummaryPlugin: 生成总结失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return ResponseEvent(
+                content=f"生成总结时出错: {e}",
+                target_user_id=event.user_id,
+                target_group_id=event.group_id
+            )
     
     async def _generate_summary(
         self,
@@ -188,25 +203,55 @@ class SummaryPlugin(Plugin):
             for msg in messages[-100:]  # 最多100条
         ])
         
-        prompt = f"""请总结以下{window_display}的群聊记录：
+        # 获取人设信息（如果有）
+        persona = getattr(ctx.config, 'chat', None)
+        if persona:
+            persona_text = getattr(persona, 'system_prompt', '')
+        else:
+            persona_text = getattr(ctx.config, 'system_prompt', '')
+        
+        # 构建带人设的提示词
+        system_prompt = """你是一个温柔的群聊总结助手。请根据以下人设来生成总结：
+"""
+        if persona_text:
+            system_prompt += f"{persona_text}\n\n"
+        else:
+            system_prompt += "你说话温柔体贴，像一个关心大家的朋友。\n\n"
+        
+        system_prompt += """【总结要求】
+1. 语气要符合你的人设，温柔自然，不要太正式或生硬
+2. 使用适合QQ聊天的格式，不要使用Markdown（如 **粗体**、*斜体*、# 标题等）
+3. 可以使用QQ表情符号（如 ✨、🌟、💕、😊 等）增加亲和力
+4. 分点总结，格式示例：
+   💬 主要话题：xxx
+   👥 活跃群友：xxx、xxx
+   ✨ 有趣内容：xxx
+5. 可以适当加入一些温馨的互动感，比如"大家聊得很开心呢~"
+6. 内容详略得当，自然流畅即可，不需要刻意压缩字数
+
+请用纯文本格式输出总结。"""
+        
+        user_prompt = f"""请总结以下{window_display}的群聊记录：
 
 {chat_text}
 
-请用中文生成一个简洁的总结，包括：
-1. 主要讨论的话题
-2. 活跃的参与者
-3. 关键结论或有趣的内容
-
-总结要简洁明了，不超过300字。"""
+开始总结："""
         
         # 调用 LLM
         llm = ctx.services.llm
         response = await llm.chat(
-            messages=[ChatMessage(role="user", content=prompt)],
-            max_tokens=self.config.max_tokens
+            messages=[
+                ChatMessage(role="system", content=system_prompt),
+                ChatMessage(role="user", content=user_prompt)
+            ],
+            max_tokens=self.config.max_tokens,
+            temperature=0.7
         )
         
-        return f"【{window_display}聊天总结】\n\n{response.content}"
+        # 使用 QQ 友好的格式包装总结
+        header = f"✨ {window_display}群聊小结 ✨"
+        separator = "─" * 12
+        return f"{header}\n{separator}\n{response.content}\n{separator}"
     
     async def _handle_stats(
         self,

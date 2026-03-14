@@ -11,6 +11,7 @@ from qq_bot.agent.intents import IntentResult, IntentType
 from qq_bot.agent.prompts import IntentKeywords, IntentPrompts
 from qq_bot.core.exceptions import IntentError, LLMError
 from qq_bot.services.llm.base import ChatMessage, LLMService
+from qq_bot.utils.debug_logger import log_llm_context, log_compact_debug
 
 
 class IntentClassifier:
@@ -112,7 +113,7 @@ class IntentClassifier:
             ]
             
             if self.debug_mode:
-                self._log_prompt("PERSONA EXTRACTION", messages)
+                log_llm_context("人设提取上下文", messages)
             
             response = await self.llm_service.chat(
                 messages=messages,
@@ -159,7 +160,7 @@ class IntentClassifier:
         ]
         
         if self.debug_mode:
-            self._log_prompt("INTENT CLASSIFICATION", messages)
+            log_llm_context("意图识别上下文", messages)
         
         response = await self.llm_service.chat(
             messages=messages,
@@ -194,23 +195,7 @@ class IntentClassifier:
     
 
     
-    def _log_prompt(self, title: str, messages: list[ChatMessage]) -> None:
-        """打印调试用的 Prompt 信息。
-        
-        Args:
-            title: 标题
-            messages: 消息列表
-        """
-        print("\n" + "=" * 60)
-        print(f"[DEBUG] ===== {title} PROMPT =====")
-        print("=" * 60)
-        for msg in messages:
-            print(f"\n[{msg.role.upper()}]:")
-            print(msg.content)
-            print("-" * 40)
-        print("=" * 60)
-        print(f"[DEBUG] ===== END {title} PROMPT =====")
-        print("=" * 60 + "\n")
+
 
 
 

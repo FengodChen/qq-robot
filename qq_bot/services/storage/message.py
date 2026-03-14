@@ -86,7 +86,7 @@ class MessageStore(StorageService):
             retention_days: 消息保留天数。
         """
         if db_path is None:
-            db_path = Path(__file__).parent.parent.parent / "data" / "messages.db"
+            db_path = Path("data") / "messages.db"
         
         self.db_path = Path(db_path)
         self.retention_days = retention_days

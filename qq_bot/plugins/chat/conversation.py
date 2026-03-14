@@ -73,7 +73,7 @@ class ConversationManager:
         
         # 设置数据库路径
         if db_path is None:
-            db_path = Path(__file__).parent.parent.parent / "data" / "chat_history.db"
+            db_path = Path("data") / "chat_history.db"
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         

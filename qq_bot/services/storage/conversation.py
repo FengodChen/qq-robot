@@ -58,7 +58,7 @@ class ConversationManager:
         self.max_context = max_context
         
         if db_path is None:
-            db_path = Path(__file__).parent.parent.parent / "data" / "conversations.db"
+            db_path = Path("data") / "conversations.db"
         
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
