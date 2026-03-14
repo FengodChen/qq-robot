@@ -55,36 +55,20 @@ class ChatPlugin(Plugin):
         self.llm: Optional[LLMService] = ctx.services.llm
         self.message_store: Optional[MessageStore] = ctx.services.message_store
         
-        # 获取配置
-        # 优先从嵌套的 chat 配置读取，兼容旧版直接读取
-        chat_config = getattr(ctx.config, "chat", None)
-        if chat_config:
-            self.max_output_tokens = getattr(chat_config, "max_output_tokens", 300)
-            self.max_input_tokens = getattr(chat_config, "max_input_tokens", 100)
-            self.group_context_messages = getattr(chat_config, "group_context_messages", 10)
-            self.system_prompt = getattr(chat_config, "system_prompt", "")
-        else:
-            # 兼容旧版配置
-            self.max_output_tokens = getattr(ctx.config, "max_output_tokens", 300)
-            self.max_input_tokens = getattr(ctx.config, "max_input_tokens", 100)
-            self.group_context_messages = getattr(ctx.config, "group_context_messages", 10)
-            self.system_prompt = getattr(ctx.config, "system_prompt", "")
+        # 获取配置（从嵌套配置直接读取）
+        chat_config = ctx.config.chat
+        self.max_output_tokens = chat_config.max_output_tokens
+        self.max_input_tokens = chat_config.max_input_tokens
+        self.group_context_messages = chat_config.group_context_messages
+        self.system_prompt = chat_config.system_prompt
         
         # max_context 现在表示"对话轮数"，每轮包含 user + assistant 两条消息
-        # 从 storage 配置读取（新版配置结构）
-        storage_config = getattr(ctx.config, "storage", None)
-        if storage_config:
-            # 配置的是轮数，但 ConversationManager 需要消息条数，所以乘以 2
-            self.max_context = getattr(storage_config, "conversation_max_context", 10)
-        else:
-            # 兼容旧版配置
-            self.max_context = getattr(ctx.config, "max_context", 10)
+        # 从 storage 配置读取
+        storage_config = ctx.config.storage
+        self.max_context = storage_config.conversation_max_context
         
-        self.debug_mode = getattr(ctx.config, "debug", None)
-        if self.debug_mode:
-            self.debug_mode = getattr(self.debug_mode, "enabled", False)
-        else:
-            self.debug_mode = getattr(ctx.config, "debug_mode", False)
+        # 从 debug 配置读取调试模式
+        self.debug_mode = ctx.config.debug.enabled
         
         # 初始化组件
         self.conversation = ConversationManager(max_context=self.max_context)

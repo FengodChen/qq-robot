@@ -569,21 +569,11 @@ class Application:
         if chat_plugin:
             try:
                 # 使用 handle_intent 方法，传入意图信息
-                if hasattr(chat_plugin, 'handle_intent'):
-                    response = await chat_plugin.handle_intent(
-                        self.ctx, event, intent, intent_event.parameters
-                    )
-                    if response:
-                        return response
-                else:
-                    # 兼容旧方式：直接调用消息处理方法
-                    if event.is_group:
-                        response = await chat_plugin.on_group_message(self.ctx, event)
-                    else:
-                        response = await chat_plugin.on_private_message(self.ctx, event)
-                    
-                    if response:
-                        return response
+                response = await chat_plugin.handle_intent(
+                    self.ctx, event, intent, intent_event.parameters
+                )
+                if response:
+                    return response
             except Exception as e:
                 print(f"[!] Chat 插件处理失败: {e}")
                 if self.config.debug.enabled:

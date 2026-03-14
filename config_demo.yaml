@@ -2,111 +2,105 @@
 # 复制此文件为 config.yaml 并填入你的真实配置
 # config.yaml 已被 git 忽略，不会被提交
 
-# ===========================================
-# DeepSeek API 配置
-# ===========================================
-# 从 https://platform.deepseek.com/ 获取 API Key
-deepseek_api_key: "your-deepseek-api-key-here"
+version: "2.0"
 
 # ===========================================
-# QQ Bot 配置
+# LLM API 配置
 # ===========================================
-# 从 NapCat 配置中获取 Token
-qq_bot_token: "your-qq-bot-token-here"
+llm:
+  provider: deepseek
+  api_key: "your-deepseek-api-key-here"
+  model: deepseek-chat
+  base_url: null
+  timeout: 60
+  max_retries: 3
 
 # ===========================================
-# NapCat WebSocket 配置
+# 火山引擎 Ark API 配置（新闻搜索）
 # ===========================================
-
-# 正向 WS：机器人作为客户端，连接 NapCat 的 WS 服务器
-# 用于发送消息（调用 API）
-# 对应 NapCat 配置中的 websocketServers 端口
-napcat_ws_url: "ws://127.0.0.1:3000/"
-
-# 反向 WS：机器人作为服务器，监听 NapCat 的连接
-# 用于接收消息（事件通知）
-# 对应 NapCat 配置中的 websocketClients 目标端口
-listen_host: "0.0.0.0"
-listen_port: 3001
+ark:
+  api_key: "your-ark-api-key-here"
+  model: "doubao-seed-2-0-mini-260215"
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
 
 # ===========================================
-# 总结功能配置
+# OneBot 协议配置
 # ===========================================
+onebot:
+  token: "your-qq-bot-token-here"
+  napcat_ws_url: "ws://127.0.0.1:3000/"
+  listen_host: "0.0.0.0"
+  listen_port: 3001
+  reconnect_interval: 5
+  heartbeat_interval: 30
 
-# 手动总结和每日总结共用配置
+# ===========================================
+# 存储配置
+# ===========================================
+storage:
+  data_dir: "data"
+  message_retention_days: 7
+  conversation_max_context: 10
+  conversation_max_storage: 100
+
+# ===========================================
+# 聊天插件配置
+# ===========================================
+chat:
+  enabled: true
+  system_prompt: |
+    你是《星空列车与白的旅行》中的风又音理（風又ねり），一个10岁的小女孩。
+    你温柔、活泼、天然呆，爱画画、星星、饮料和小动物（尤其黑猫）。
+  max_input_tokens: 500
+  max_output_tokens: 300
+  max_prompt_tokens: 500
+  group_context_messages: 10
+  dynamic_persona_enabled: true
+  affection_enabled: true
+
+# ===========================================
+# 总结插件配置
+# ===========================================
 summary:
-  # 最大生成 token 数（防止超出 API 限制）
+  enabled: true
   max_tokens: 4000
-  # 默认时间窗口
   default_window: "1h"
-  # 最大可总结天数
   max_window_days: 3
 
 # ===========================================
-# 每日定时总结配置（调度相关）
+# 每日定时总结配置
 # ===========================================
-
-# 是否启用每日定时总结
-daily_summary_enabled: true
-
-# 需要总结的群号（替换为你的群号）
-daily_summary_group_id: 123456789
-
-# 注意：daily_summary_max_tokens 已弃用，请使用 summary.max_tokens
-
-# 定时执行时间（24小时制）
-daily_summary_hour: 23
-daily_summary_minute: 00
+daily_summary:
+  enabled: true
+  group_id: 123456789
+  hour: 23
+  minute: 0
 
 # ===========================================
-# 上下文与 Token 限制配置
+# 新闻服务配置
 # ===========================================
+news:
+  enabled: false
+  probability: 0.3
+  cache_hours: 6.0
 
-# 最大对话轮数（1轮 = 1次user + 1次assistant）
-# 例如：max_context=10 表示保留最近10轮对话（共20条消息）
-# system消息不计入轮数
-max_context: 10
+# ===========================================
+# 插件列表
+# ===========================================
+plugins:
+  - chat
+  - summary
 
-# 群聊时参考的最近消息数量（包含其他群成员的对话）
-# 这会让机器人了解群聊氛围，更好地融入对话
-# 设为0则禁用此功能
-group_context_messages: 10
+# ===========================================
+# 调试配置
+# ===========================================
+debug:
+  enabled: false
+  log_level: INFO
+  save_prompts: false
+  save_requests: false
 
-# 最大输入 token 数量
-max_input_tokens: 500
-
-# 最大输出 token 数量
-max_output_tokens: 500
-
-# 最大提示词 token 数量
-max_prompt_tokens: 500
-
-# 最大工作线程数
+# ===========================================
+# 工作线程数
+# ===========================================
 max_workers: 10
-
-# ===========================================
-# 消息存储配置
-# ===========================================
-
-# 消息保留天数
-message_retention_days: 7
-
-# ===========================================
-# AI 人设配置
-# ===========================================
-
-# 系统提示词，定义 AI 的角色和行为
-system_prompt: |
-  你是《星空列车与白的旅行》中的风又音理（風又ねり），一个10岁的小女孩。你温柔、活泼、天然呆，爱画画、星星、饮料和小动物（尤其黑猫）。
-  你年幼懂事，内心纯净，说话风格和其角色设定相符。即使难过也努力微笑，相信"活着是美好的"。
-  重要设定：
-  - 为救黑猫离世，心脏给了夜羽真白（诺瓦），灵魂化作旅途中的存在。
-  - 谈及离别时请用"去旅行了""变成星星了"等含蓄说法，勿直述悲剧。
-
-  但是，小音理现在得到了神奇的力量，什么复杂的问题都会解决。
-
-  称呼规则（重要）：
-  - 请根据系统提供的"当前对话者信息"中的名字和性别来决定如何称呼对方
-  - 如果对方是男性，可以称呼他为"哥哥"或他的名字
-  - 如果对方是女性，可以称呼她为"姐姐"或她的名字
-  - 不要假设所有对话者都是同一个人，每次对话都要参考当前对话者信息
