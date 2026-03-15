@@ -42,25 +42,86 @@ def extract_text(message: Any) -> str:
     return str(message)
 
 
-def clean_at_text(text: str, at_pattern: str | None = None) -> str:
-    """清理文本中的 @ 标记。
+def convert_at_to_text(
+    text: str,
+    user_map: dict[int, str] | None = None,
+    self_id: int | None = None,
+    self_name: str = "我"
+) -> str:
+    """将 CQ:at 代码转换为可读的 @提及格式。
+    
+    将 [CQ:at,qq=123456] 转换为 @昵称 或 @123456，保留提及的语义信息。
+    
+    Args:
+        text: 原始文本，包含 CQ:at 代码。
+        user_map: 用户 ID 到昵称的映射字典，可选。
+        self_id: 机器人自己的 QQ 号，用于特殊标识对自己的提及。
+        self_name: 对自己的提及显示的名称，默认为 "我"。
+        
+    Returns:
+        转换后的文本，CQ:at 代码被替换为 @提及。
+        
+    Example:
+        >>> convert_at_to_text("[CQ:at,qq=123456] 你好")
+        '@123456 你好'
+        >>> convert_at_to_text("[CQ:at,qq=123456] 你好", user_map={123456: "小明"})
+        '@小明 你好'
+        >>> convert_at_to_text("[CQ:at,qq=10000] 你好", self_id=10000, self_name="机器人")
+        '@机器人 你好'
+    """
+    def replace_at(match: re.Match) -> str:
+        qq_str = match.group(1)
+        try:
+            qq = int(qq_str)
+        except ValueError:
+            return match.group(0)  # 保留原始格式如果解析失败
+        
+        # 如果是提及自己，使用特殊名称
+        if self_id is not None and qq == self_id:
+            return f"@{self_name}"
+        
+        # 如果有昵称映射，使用昵称
+        if user_map and qq in user_map:
+            return f"@{user_map[qq]}"
+        
+        # 默认使用 QQ 号
+        return f"@{qq_str}"
+    
+    # 匹配 [CQ:at,qq=数字] 格式
+    pattern = r"\[CQ:at,qq=(\d+)\]"
+    return re.sub(pattern, replace_at, text)
+
+
+def clean_at_text(
+    text: str, 
+    at_pattern: str | None = None,
+    user_map: dict[int, str] | None = None,
+    self_id: int | None = None,
+    self_name: str = "我"
+) -> str:
+    """清理文本中的 @ 标记，保留提及信息。
+    
+    将 CQ:at 代码转换为可读的 @提及格式，而不是直接删除。
+    这样 LLM 可以理解消息中提到了谁。
     
     Args:
         text: 原始文本。
-        at_pattern: @ 的正则模式，默认匹配 [CQ:at,qq=数字]。
+        at_pattern: @ 的正则模式（已弃用，保留用于兼容性）。
+        user_map: 用户 ID 到昵称的映射字典，可选。
+        self_id: 机器人自己的 QQ 号。
+        self_name: 对自己的提及显示的名称。
         
     Returns:
-        清理后的文本。
+        清理后的文本，CQ:at 代码被替换为 @提及。
         
     Example:
         >>> clean_at_text("[CQ:at,qq=123456] 你好")
-        '你好'
+        '@123456 你好'
+        >>> clean_at_text("[CQ:at,qq=123456] 你好", user_map={123456: "小明"})
+        '@小明 你好'
     """
-    if at_pattern is None:
-        at_pattern = r"\[CQ:at,qq=\d+\]"
-    
-    # 移除 @ 标记
-    cleaned = re.sub(at_pattern, "", text)
+    # 使用 convert_at_to_text 进行转换
+    cleaned = convert_at_to_text(text, user_map=user_map, self_id=self_id, self_name=self_name)
     # 清理多余空白
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned.strip()
@@ -104,6 +165,23 @@ def extract_qq_from_at(text: str) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+def extract_all_qq_from_at(text: str) -> list[int]:
+    """从文本中提取所有 @ 提及的 QQ 号。
+    
+    Args:
+        text: 包含 @ 标记的文本。
+        
+    Returns:
+        QQ 号列表，如果没有找到则返回空列表。
+        
+    Example:
+        >>> extract_all_qq_from_at("[CQ:at,qq=123456] 你好 [CQ:at,qq=789012]")
+        [123456, 789012]
+    """
+    matches = re.findall(r"\[CQ:at,qq=(\d+)\]", text)
+    return [int(qq) for qq in matches]
 
 
 def is_at_me(text: str, self_id: int) -> bool:

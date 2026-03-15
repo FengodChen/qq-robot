@@ -138,12 +138,15 @@ class AffectionManager:
     # 最大记录数
     MAX_RECORDS = 50
     
-    def __init__(self, db_path: Optional[Path] = None, llm_service: Any = None):
+    def __init__(self, db_path: Optional[Path] = None, llm_service: Any = None, 
+                 prompts: Any = None, tone_descriptions: Optional[Dict[str, str]] = None):
         """初始化好感度管理器。
         
         Args:
             db_path: 数据库文件路径，默认为 data/affection_data.db。
             llm_service: LLM 服务实例，用于生成人设喜好/雷点和评估好感度。
+            prompts: 好感度提示词配置。
+            tone_descriptions: 语气描述配置（来自 chat prompts）。
         """
         if db_path is None:
             db_path = Path("data") / "affection_data.db"
@@ -155,6 +158,8 @@ class AffectionManager:
         self._persona_preferences: Dict[str, PersonaPreferences] = {}
         self._lock = threading.RLock()
         self._llm = llm_service
+        self._prompts = prompts
+        self._tone_descriptions = tone_descriptions or {}
         
         # 初始化数据库
         self._init_db()
@@ -429,22 +434,7 @@ class AffectionManager:
         level = self.get_affection_level(value)
         
         # 根据好感度等级生成语气描述
-        tone_descriptions = {
-            "死敌": "你对用户怀有极致的憎恨，语气冰冷刺骨，每一个字都像淬了毒的刀刃。",
-            "憎恨": "你对用户怀有强烈的负面情绪，语气极其冷漠、尖锐，充满敌意。",
-            "厌恶": "你对用户有明显的反感，态度冷淡疏离，不愿多交流。",
-            "反感": "你对用户有负面印象，态度冷淡客气但保持距离。",
-            "疏离": "你对用户保持明显的距离感，态度冷淡客气但疏离。",
-            "陌生": "你对用户完全是陌生人的态度，回答礼貌但极其疏远正式。",
-            "初识": "你对用户保持基本的礼貌友好，但仍然有明显的距离感。",
-            "熟悉": "你对用户比较放松，会偶尔主动关心，语气较为亲切自然。",
-            "友好": "你对用户很友善，会使用轻松活泼的语气，经常会开玩笑。",
-            "亲密": "你对用户非常亲近，语气温柔宠溺，充满关心和依赖。",
-            "至交": "你对用户毫无保留，语气极其亲密宠溺甚至带点任性。",
-            "灵魂伴侣": "你对用户的爱意已经超越了世俗的理解，达到了灵魂交融的境界。"
-        }
-        
-        tone = tone_descriptions.get(level, "你对用户保持中立态度。")
+        tone = self._tone_descriptions.get(level, "你对用户保持中立态度。")
         
         prompt = f"""【好感度状态】
 当前等级: {level}（{value}/100）
@@ -470,90 +460,6 @@ class AffectionManager:
         """
         affection = self.get_affection(group_id, user_id)
         return affection.records[-count:] if affection.records else []
-    
-    def evaluate_affection_change(
-        self, 
-        user_message: str, 
-        bot_reply: str, 
-        persona_config: Optional[Dict] = None
-    ) -> Tuple[int, str]:
-        """评估好感度变化（基于规则）。
-        
-        Args:
-            user_message: 用户消息。
-            bot_reply: 机器人回复。
-            persona_config: 人设配置（包含喜好和雷点）。
-        
-        Returns:
-            (变化值, 原因)。
-        """
-        msg = user_message.lower()
-        
-        # 获取人设喜好和雷点
-        dislikes = persona_config.get("dislikes", []) if persona_config else []
-        favorites = persona_config.get("favorite_things", []) if persona_config else []
-        interests = persona_config.get("interests", []) if persona_config else []
-        
-        # 严重雷点
-        severe_dislikes = ['虐待', '去死', '自杀', '杀你', '杀死', '极度讨厌', '恨死']
-        for item in severe_dislikes:
-            if item in msg:
-                return -5, "说了很让人难过的话..."
-        
-        # 检查一般雷点
-        dislike_count = sum(1 for item in dislikes if item.lower() in msg)
-        if dislike_count >= 2:
-            return -3, "说话让人不太舒服"
-        elif dislike_count >= 1:
-            return -2, "被说了难过的话"
-        
-        # 检查特别喜欢的事物
-        favorite_count = 0
-        matched_favorites = []
-        for item in favorites:
-            if item.lower() in msg:
-                favorite_count += 1
-                matched_favorites.append(item)
-        
-        if favorite_count >= 2:
-            return 3, f"聊了我喜欢的{matched_favorites[0]}和{matched_favorites[1]}"
-        elif favorite_count == 1:
-            return 2, f"提到了我喜欢的{matched_favorites[0]}"
-        
-        # 检查一般兴趣
-        interest_count = 0
-        matched_interests = []
-        for item in interests:
-            if item.lower() in msg:
-                interest_count += 1
-                if item not in matched_interests:
-                    matched_interests.append(item)
-        
-        if interest_count >= 3:
-            return 2, f"聊了我喜欢的{matched_interests[0]}等话题"
-        elif interest_count >= 1:
-            return 1, f"提到了{matched_interests[0]}"
-        
-        # 检查真诚表达
-        sincere_patterns = ['很喜欢你', '最棒了', '超可爱', '谢谢你一直', '谢谢你陪我', '画得很好', '被治愈了']
-        for pattern in sincere_patterns:
-            if pattern in msg:
-                return 2, "话语很真诚温暖"
-        
-        # 简单的礼貌词不会加分
-        like_expressions = ['喜欢你', '可爱', '好棒', '厉害', '温柔']
-        like_count = sum(1 for w in like_expressions if w in msg)
-        if like_count >= 2:
-            return 1, "表达了喜爱"
-        
-        # 检查轻度不友善
-        mild_rude = ['笨', '蠢', '傻', '滚', '走开', '讨厌你', '你很烦', '别烦我', '闭嘴']
-        rude_count = sum(1 for w in mild_rude if w in msg)
-        if rude_count >= 1:
-            return -1, "语气有点凶"
-        
-        # 默认不变
-        return 0, ""
     
     def format_affection_info(self, group_id: int, user_id: int) -> str:
         """格式化显示好感度信息。
@@ -656,32 +562,7 @@ class AffectionManager:
         try:
             from qq_bot.services.llm.base import ChatMessage
             
-            system_prompt = """你是一个角色分析师。请根据给定的人设描述，分析该角色的兴趣爱好、喜欢的事物和讨厌的事物（雷点）。
-
-【任务要求】
-1. interests: 角色的兴趣爱好（3-5个）
-2. favorite_things: 角色特别喜欢的事物（3-5个）
-3. dislikes: 角色讨厌的事物/雷点（3-5个）
-4. personality_summary: 角色性格的一句话摘要
-
-【输出格式】
-只返回 JSON 格式，不要有任何其他说明：
-{
-  "interests": ["兴趣1", "兴趣2", "兴趣3"],
-  "favorite_things": ["喜欢的事物1", "喜欢的事物2", "喜欢的事物3"],
-  "dislikes": ["雷点1", "雷点2", "雷点3"],
-  "personality_summary": "角色性格描述"
-}
-
-【示例】
-人设：你是一个可爱的JK少女，喜欢猫咪和甜点，讨厌早起和下雨天。
-输出：
-{
-  "interests": ["时尚", "社交媒体", "购物", "美妆"],
-  "favorite_things": ["猫咪", "甜点", "自拍", "可爱的东西"],
-  "dislikes": ["早起", "下雨天", "考试", "被说教"],
-  "personality_summary": "活泼可爱的JK少女，喜欢可爱事物"
-}"""
+            system_prompt = self._prompts.preference_generation
             
             messages = [
                 ChatMessage(role="system", content=system_prompt),
@@ -761,53 +642,19 @@ class AffectionManager:
         if preferences is None:
             preferences = await self.generate_persona_preferences(persona_text)
         
-        # 如果没有 LLM 服务，回退到规则评估
+        # 如果没有 LLM 服务，返回无变化
         if not self._llm:
-            return self.evaluate_affection_change(
-                user_message, bot_reply,
-                {
-                    "interests": preferences.interests,
-                    "favorite_things": preferences.favorite_things,
-                    "dislikes": preferences.dislikes
-                }
-            )
+            return 0, ""
         
         try:
             from qq_bot.services.llm.base import ChatMessage
             
-            system_prompt = f"""你是一个好感度评估助手。请根据用户的消息和当前人设，评估这次对话对好感度的影响。
-
-【当前人设】
-{persona_text}
-
-【人设喜好/雷点】
-- 兴趣爱好: {', '.join(preferences.interests)}
-- 特别喜欢: {', '.join(preferences.favorite_things)}
-- 雷点/讨厌: {', '.join(preferences.dislikes)}
-
-【评估规则】
-1. 好感度变化范围: -5 到 +5
-2. 评估标准:
-   +5: 极度感动/被深深打动（如：救了角色、深情的告白、极其贴心的行为）
-   +3~+4: 非常愉快/被关心（如：聊到特别喜欢的事物、收到礼物、被夸奖）
-   +1~+2: 比较愉快/友好（如：礼貌问候、正常交流、轻微关心）
-   0: 中性（普通对话，无明显情绪波动）
-   -1~-2: 轻微不悦（如：语气冷淡、轻微冒犯、触及轻微雷点）
-   -3~-4: 明显不悦（如：触及雷点、语气恶劣、让人不舒服）
-   -5: 极度愤怒/伤心（如：严重侮辱、恶意攻击、触及底线）
-
-3. 考虑因素:
-   - 是否触及人设的喜好/雷点
-   - 用户语气是否友善/恶劣
-   - 当前好感度水平（高好感度时更容易获得好感）
-   - 对话的情感价值
-
-【输出格式】
-只返回 JSON 格式，不要有任何其他说明：
-{{
-  "change": 变化值(-5到5),
-  "reason": "变化原因（简洁描述）"
-}}"""
+            system_prompt = self._prompts.evaluation.format(
+                persona_text=persona_text,
+                interests=', '.join(preferences.interests),
+                favorite_things=', '.join(preferences.favorite_things),
+                dislikes=', '.join(preferences.dislikes)
+            )
             
             messages = [
                 ChatMessage(role="system", content=system_prompt),
@@ -834,12 +681,5 @@ class AffectionManager:
                 
         except Exception as e:
             print(f"[!] LLM 好感度评估失败: {e}")
-            # 回退到规则评估
-            return self.evaluate_affection_change(
-                user_message, bot_reply,
-                {
-                    "interests": preferences.interests,
-                    "favorite_things": preferences.favorite_things,
-                    "dislikes": preferences.dislikes
-                }
-            )
+            # 返回无变化
+            return 0, ""

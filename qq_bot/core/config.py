@@ -92,6 +92,8 @@ class NewsConfig(BaseModel):
     enabled: bool
     probability: float
     cache_hours: float
+    system_prompt: str = "你是一个新闻助手。请使用 web_search 工具搜索今天的最新真实新闻，提供简洁准确的新闻摘要。"
+    user_prompt: str = "请搜索今天（{date}）的最新重要新闻，列出3-5条真实新闻，每条用一句话概括，总字数控制在200字以内。"
 
 
 class OneBotConfig(BaseModel):
@@ -116,6 +118,56 @@ class DebugConfig(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     save_prompts: bool = False  # 是否保存 prompts 到文件
     save_requests: bool = False  # 是否保存 API 请求
+
+
+class ChatPromptsConfig(BaseModel):
+    """聊天插件提示词配置。"""
+    
+    model_config = ConfigDict(extra="forbid")
+    
+    level_descriptions: dict[str, str]
+    tone_descriptions: dict[str, str]
+    chat_requirements: str
+    help_text: str
+    persona_extraction: str
+    affection_evaluation: str
+
+
+class AgentPromptsConfig(BaseModel):
+    """Agent 提示词配置。"""
+    
+    model_config = ConfigDict(extra="forbid")
+    
+    intent_classification: str
+    persona_extraction: str
+
+
+class AffectionPromptsConfig(BaseModel):
+    """好感度系统提示词配置。"""
+    
+    model_config = ConfigDict(extra="forbid")
+    
+    preference_generation: str
+    evaluation: str
+
+
+class SummaryPromptsConfig(BaseModel):
+    """总结服务提示词配置。"""
+    
+    model_config = ConfigDict(extra="forbid")
+    
+    instructions: str
+
+
+class PromptsConfig(BaseModel):
+    """提示词总配置。"""
+    
+    model_config = ConfigDict(extra="forbid")
+    
+    chat: ChatPromptsConfig
+    agent: AgentPromptsConfig
+    affection: AffectionPromptsConfig
+    summary: SummaryPromptsConfig
 
 
 class BotConfig(BaseSettings):
@@ -161,6 +213,9 @@ class BotConfig(BaseSettings):
     
     # 调试配置
     debug: DebugConfig = Field(default_factory=DebugConfig)
+    
+    # 提示词配置
+    prompts: PromptsConfig
     
     # 工作线程数
     max_workers: int = 4

@@ -106,7 +106,7 @@ class DeepSeekService(LLMService):
             message = choice["message"]
             usage = data.get("usage", {})
             
-            return ChatResponse(
+            result = ChatResponse(
                 content=message["content"],
                 usage={
                     "prompt_tokens": usage.get("prompt_tokens", 0),
@@ -116,6 +116,22 @@ class DeepSeekService(LLMService):
                 finish_reason=choice.get("finish_reason", ""),
                 raw_response=data
             )
+            
+            # Debug 输出响应内容
+            if self.debug:
+                from qq_bot.utils.debug_logger import log_compact_debug, log_debug_block
+                # 使用 repr 显示原始内容，便于看清特殊字符
+                content_repr = repr(result.content)
+                if len(content_repr) > 500:
+                    content_repr = content_repr[:250] + " ... " + content_repr[-250:]
+                log_compact_debug("LLM 响应", 
+                                  finish_reason=result.finish_reason,
+                                  tokens=f"{usage.get('total_tokens', 0)}",
+                                  content_len=len(result.content))
+                # 单独输出完整内容便于查看
+                log_debug_block("LLM 响应内容", content_repr)
+            
+            return result
             
         except requests.HTTPError as e:
             status_code = e.response.status_code if hasattr(e, 'response') else None

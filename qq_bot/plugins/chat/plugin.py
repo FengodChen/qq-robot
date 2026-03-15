@@ -15,6 +15,7 @@ from qq_bot.core.events import MessageEvent, ResponseEvent
 from qq_bot.services.llm.base import LLMService, ChatMessage
 from qq_bot.services.storage.message import MessageStore, get_message_store
 from qq_bot.utils.debug_logger import log_llm_context, log_compact_debug
+from qq_bot.utils.text import convert_at_to_text
 
 from qq_bot.plugins.chat.conversation import ConversationManager
 from qq_bot.plugins.chat.persona import PersonaManager, PersonaConfig
@@ -74,10 +75,17 @@ class ChatPlugin(Plugin):
         # 从 debug 配置读取调试模式
         self.debug_mode = ctx.config.debug.enabled
         
+        # 从配置读取提示词
+        self.prompts = ctx.config.prompts.chat
+        
         # 初始化组件
         self.conversation = ConversationManager(max_context=self.max_context)
         self.persona = PersonaManager(default_prompt=self.system_prompt)
-        self.affection = AffectionManager(llm_service=self.llm)
+        self.affection = AffectionManager(
+            llm_service=self.llm, 
+            prompts=ctx.config.prompts.affection,
+            tone_descriptions=self.prompts.tone_descriptions
+        )
         
         # 等待人设设置的状态
         self._pending_prompts: Dict[Tuple[int, int], bool] = {}
@@ -136,8 +144,11 @@ class ChatPlugin(Plugin):
         Returns:
             响应事件。
         """
-        # 清理 @ 标记（application 层已检查是否 @ 机器人）
-        content = re.sub(r"\[CQ:at,qq=\d+\]", "", event.content).strip()
+        # 转换 @ 标记为可读格式，保留提及信息
+        # 从群聊上下文中收集用户信息用于昵称映射
+        user_map = await self._build_user_map_from_context(event.group_id)
+        self_id = getattr(self.ctx.config, "self_id", None)
+        content = convert_at_to_text(event.content, user_map=user_map, self_id=self_id, self_name="我").strip()
         if not content:
             return None
         
@@ -345,37 +356,7 @@ class ChatPlugin(Plugin):
             # LLM 不可用，回退到规则提取
             return self._extract_persona_text(message)
         
-        system_prompt = """你是一个人设提取助手。你的任务是从用户的指令中提取纯粹的人设描述，并将其转换为以"你是"开头的角色设定语句。
-
-【任务说明】
-1. 从用户消息中提取人设的核心描述
-2. 将描述转换为以"你是"开头的角色设定语句
-3. 去除所有指令性词汇，保留纯粹的人设内容
-
-【示例】
-
-输入: "你现在的人设是一个可爱的JK少女"
-输出: {"persona_text": "你是一个可爱的JK少女", "success": true}
-
-输入: "更改人设成温柔的大姐姐"
-输出: {"persona_text": "你是一个温柔的大姐姐，说话温柔体贴，会照顾人", "success": true}
-
-输入: "扮演一只傲娇的猫娘"
-输出: {"persona_text": "你是一只傲娇的猫娘，有着猫耳和尾巴，说话带着喵~的口癖", "success": true}
-
-输入: "设定为知识渊博的教授"
-输出: {"persona_text": "你是一位知识渊博的教授，说话严谨专业，喜欢引用经典", "success": true}
-
-输入: "你现在是狂热的电竞观众精通LOL比赛"
-输出: {"persona_text": "你是一位狂热的电竞观众，精通LOL比赛，对赛事和选手如数家珍", "success": true}
-
-【规则】
-1. 必须以"你是"开头
-2. 补充适当的性格/行为描述，使人设更完整（2-3句话）
-3. 去除所有指令性词汇：更改人设、修改人设、设定为、变成、扮演等
-4. 如果提取失败或没有有效内容，返回success: false
-
-只返回JSON格式，不要有任何其他说明。"""
+        system_prompt = self.prompts.persona_extraction
         
         try:
             from qq_bot.services.llm.base import ChatMessage
@@ -385,13 +366,10 @@ class ChatPlugin(Plugin):
                 ChatMessage(role="user", content=message)
             ]
             
-            if self.debug_mode:
-                log_compact_debug("人设提取", request=message[:50])
-            
             response = await self.llm.chat(
                 messages=messages,
                 temperature=0.3,
-                max_tokens=200
+                max_tokens=300
             )
             
             # 解析 JSON 响应
@@ -403,8 +381,6 @@ class ChatPlugin(Plugin):
                 result = json.loads(json_match.group())
                 if result.get('success') and result.get('persona_text'):
                     extracted = result.get('persona_text', '').strip()
-                    if self.debug_mode:
-                        log_compact_debug("人设提取结果", result=extracted[:50])
                     return extracted
                     
         except Exception as e:
@@ -502,10 +478,6 @@ class ChatPlugin(Plugin):
             
             # 2. 构建消息列表（包含好感度变化信息）
             messages = await self._build_messages(event, change, change_reason)
-            
-            # Debug 输出完整上下文
-            if self.debug_mode:
-                log_llm_context("聊天插件上下文", messages)
             
             # 3. 调用 LLM 生成回复
             response = await self.llm.chat(
@@ -610,37 +582,15 @@ class ChatPlugin(Plugin):
         # 获取人设喜好配置
         preferences = self.affection.get_persona_preferences(persona_text)
         if preferences is None:
-            # 如果没有配置，使用规则评估
-            return self.affection.evaluate_affection_change(user_message, "", None)
+            return 0, ""
         
-        # 如果没有 LLM 服务，回退到规则评估
+        # 如果没有 LLM 服务，返回无变化
         if not self.llm:
-            return self.affection.evaluate_affection_change(
-                user_message, "",
-                {
-                    "interests": preferences.interests,
-                    "favorite_things": preferences.favorite_things,
-                    "dislikes": preferences.dislikes
-                }
-            )
+            return 0, ""
         
         # 获取关系等级描述
         level = self.affection.get_affection_level(current_affection)
-        level_descriptions = {
-            "死敌": "你们是死敌关系，彼此憎恨",
-            "憎恨": "你憎恨这个用户",
-            "厌恶": "你厌恶这个用户",
-            "反感": "你对这个用户有反感",
-            "疏离": "你们关系疏离，有距离感",
-            "陌生": "你们刚刚认识，彼此还不太了解",
-            "初识": "有过几次简单交流，正在互相了解",
-            "熟悉": "比较了解彼此，关系比较自然",
-            "友好": "关系不错的朋友，相处融洽",
-            "亲密": "很亲近的关系，彼此信任",
-            "至交": "非常重要的关系，如同至交好友",
-            "灵魂伴侣": "灵魂交融的关系，彼此是唯一的存在"
-        }
-        level_desc = level_descriptions.get(level, "关系状态未知")
+        level_desc = self.prompts.level_descriptions.get(level, "关系状态未知")
         
         # 格式化对话历史（取最近5条，不包括当前消息）
         history_text = ""
@@ -661,37 +611,15 @@ class ChatPlugin(Plugin):
             history_text = "（暂无对话历史）"
         
         try:
-            system_prompt = f"""你是一个好感度评估助手。请根据对话上下文评估用户消息对好感度的影响。
-
-【当前人设】
-{persona_text}
-
-【人设喜好/雷点】
-- 兴趣爱好: {', '.join(preferences.interests)}
-- 特别喜欢: {', '.join(preferences.favorite_things)}
-- 雷点/讨厌: {', '.join(preferences.dislikes)}
-
-【当前关系状态】
-- 关系等级: {level}（{current_affection}/100）
-- 状态描述: {level_desc}
-
-【评估规则】
-1. 好感度变化范围: -5 到 +5
-2. 评估标准:
-   +5: 极度感动/被深深打动
-   +3~+4: 非常愉快/被关心
-   +1~+2: 比较愉快/友好
-   0: 中性（普通对话）
-   -1~-2: 轻微不悦
-   -3~-4: 明显不悦
-   -5: 极度愤怒/伤心
-
-【输出格式】
-只返回 JSON 格式：
-{{
-  "change": 变化值(-5到5),
-  "reason": "变化原因（10字以内）"
-}}"""
+            system_prompt = self.prompts.affection_evaluation.format(
+                persona_text=persona_text,
+                interests=', '.join(preferences.interests) if preferences.interests else "",
+                favorite_things=', '.join(preferences.favorite_things) if preferences.favorite_things else "",
+                dislikes=', '.join(preferences.dislikes) if preferences.dislikes else "",
+                level=level,
+                current_affection=current_affection,
+                level_desc=level_desc
+            )
             
             user_prompt = f"""【对话历史】
 {history_text}
@@ -706,17 +634,22 @@ class ChatPlugin(Plugin):
                 ChatMessage(role="user", content=user_prompt)
             ]
             
+            # Debug 输出请求信息
+            if self.debug_mode:
+                log_llm_context("好感度评估请求", messages)
+            
             response = await self.llm.chat(
                 messages=messages,
                 temperature=0.3,
-                max_tokens=200
+                max_tokens=500
             )
             
             # 解析 JSON 响应
             content = response.content.strip()
             
+            # Debug 输出原始响应
             if self.debug_mode:
-                log_compact_debug("好感度评估响应", content=content[:200])
+                log_compact_debug("好感度评估原始响应", content=repr(content[:500]))
             
             # 尝试多种方式解析 JSON
             result = None
@@ -727,7 +660,7 @@ class ChatPlugin(Plugin):
             except json.JSONDecodeError:
                 pass
             
-            # 方式2: 使用正则表达式提取 JSON 对象
+            # 方式2: 使用正则表达式提取 JSON 对象（非贪婪匹配）
             if result is None:
                 json_match = re.search(r'\{[\s\S]*?\}', content)
                 if json_match:
@@ -745,6 +678,45 @@ class ChatPlugin(Plugin):
                     except json.JSONDecodeError:
                         pass
             
+            # Debug 输出当前解析状态
+            if self.debug_mode:
+                log_compact_debug("好感度解析", content_preview=repr(content[:100]))
+            
+            # 方式4: 尝试修复不完整的 JSON（提取 change 和 reason 字段）
+            if result is None:
+                change_match = re.search(r'"change"\s*[:\=]\s*([+-]?\d+)', content)
+                reason_match = re.search(r'"reason"\s*[:\=]\s*"([^"]*)"', content)
+                if change_match:
+                    try:
+                        change = int(change_match.group(1))
+                        reason = reason_match.group(1) if reason_match else "评估完成"
+                        result = {"change": change, "reason": reason}
+                        if self.debug_mode:
+                            log_compact_debug("好感度解析方式4成功", change=change)
+                    except (ValueError, AttributeError):
+                        pass
+            
+            # 方式5: 处理极端不完整的情况（如 '\n  "change"' 只有字段名）
+            if result is None:
+                # 检查是否有 change 字段的痕迹但无法提取数值
+                if '"change"' in content or '"change":' in content or '"change" :' in content:
+                    # 尝试从任何数字中提取可能的 change 值
+                    all_numbers = re.findall(r'[+-]?\d+', content)
+                    if all_numbers:
+                        try:
+                            # 取第一个数字作为 change 值
+                            change = max(-5, min(5, int(all_numbers[0])))
+                            result = {"change": change, "reason": "评估完成"}
+                            if self.debug_mode:
+                                log_compact_debug("好感度解析方式5成功(有数字)", change=change)
+                        except ValueError:
+                            pass
+                    else:
+                        # 完全无法解析，默认无变化
+                        result = {"change": 0, "reason": "评估完成"}
+                        if self.debug_mode:
+                            log_compact_debug("好感度解析方式5成功(无数字)", change=0)
+            
             # 如果成功解析
             if result is not None:
                 change = max(-5, min(5, result.get("change", 0)))
@@ -753,21 +725,14 @@ class ChatPlugin(Plugin):
                     reason = result.get("reasoning", result.get("cause", result.get("explanation", "评估完成")))
                 return change, reason
             
-            # 解析失败，打印原始响应以便调试
-            print(f"[!] 无法解析 LLM 响应，原始内容: {content[:200]}")
-            raise ValueError(f"无法从 LLM 响应中解析 JSON，响应内容: {content[:100]}...")
+            # 解析失败
+            raise ValueError(f"无法从 LLM 响应中解析 JSON")
                 
         except Exception as e:
-            print(f"[!] LLM 好感度预评估失败: {e}")
-            # 回退到规则评估
-            return self.affection.evaluate_affection_change(
-                user_message, "",
-                {
-                    "interests": preferences.interests,
-                    "favorite_things": preferences.favorite_things,
-                    "dislikes": preferences.dislikes
-                }
-            )
+            if self.debug_mode:
+                print(f"[!] LLM 好感度预评估失败: {e}")
+            # 返回无变化
+            return 0, ""
     
     async def _build_messages(
         self, 
@@ -799,20 +764,7 @@ class ChatPlugin(Plugin):
         messages.append(ChatMessage(role="system", content=affection_prompt))
         
         # 3. 系统提示词 - 聊天要求
-        chat_requirements = """称呼规则：
-- 请根据系统提供的"当前对话者信息"中的名字和性别来决定如何称呼对方
-
-聊天：
-- 你可视聊天氛围，主动并自然地和对方聊及今天的新闻内容
-- 请你依据你对对方的好感度变更语气
-- 当前内容与你之前的聊天内容保持非重复性
-- 你可以获取到群聊相关记录，其中"与<昵称>对话的分身"代表着是你的分身和<昵称>的聊天记录
-
-输出格式：
-- 你在QQ中对话，因此不要使用MD格式，而是使用适合QQ聊天的格式
-- 请避免长篇大论，控制字数在100字以内
-"""
-        messages.append(ChatMessage(role="system", content=chat_requirements))
+        messages.append(ChatMessage(role="system", content=self.prompts.chat_requirements))
         
         # 3.5 新闻内容（根据概率配置）
         if self.news_service and self.config.news.enabled:
@@ -957,22 +909,7 @@ class ChatPlugin(Plugin):
         level = self.affection.get_affection_level(value)
         
         # 根据好感度等级生成语气描述
-        tone_descriptions = {
-            "死敌": "你对用户怀有极致的憎恨，语气冰冷刺骨，每一个字都像淬了毒的刀刃。",
-            "憎恨": "你对用户怀有强烈的负面情绪，语气极其冷漠、尖锐，充满敌意。",
-            "厌恶": "你对用户有明显的反感，态度冷淡疏离，不愿多交流。",
-            "反感": "你对用户有负面印象，态度冷淡客气但保持距离。",
-            "疏离": "你对用户保持明显的距离感，态度冷淡客气但疏离。",
-            "陌生": "你对用户完全是陌生人的态度，回答礼貌但极其疏远正式。",
-            "初识": "你对用户保持基本的礼貌友好，但仍然有明显的距离感。",
-            "熟悉": "你对用户比较放松，会偶尔主动关心，语气较为亲切自然。",
-            "友好": "你对用户很友善，会使用轻松活泼的语气，经常会开玩笑。",
-            "亲密": "你对用户非常亲近，语气温柔宠溺，充满关心和依赖。",
-            "至交": "你对用户毫无保留，语气极其亲密宠溺甚至带点任性。",
-            "灵魂伴侣": "你对用户的爱意已经超越了世俗的理解，达到了灵魂交融的境界。"
-        }
-        
-        tone = tone_descriptions.get(level, "你对用户保持中立态度。")
+        tone = self.prompts.tone_descriptions.get(level, "你对用户保持中立态度。")
         
         # 构建好感度变化描述
         if pending_change > 0:
@@ -1080,6 +1017,41 @@ class ChatPlugin(Plugin):
         except Exception as e:
             print(f"[!] 存储机器人消息失败: {e}")
     
+    async def _build_user_map_from_context(self, group_id: int) -> dict[int, str]:
+        """从群聊上下文中构建用户 ID 到昵称的映射。
+        
+        Args:
+            group_id: 群组 ID。
+            
+        Returns:
+            用户 ID 到昵称的映射字典。
+        """
+        user_map: dict[int, str] = {}
+        
+        if not self.message_store:
+            return user_map
+        
+        try:
+            # 获取最近群消息中的用户信息
+            recent_messages = self.message_store.get_messages_since(
+                since=time.time() - 3600,  # 最近1小时
+                group_id=group_id,
+                limit=50
+            )
+            
+            for msg in recent_messages:
+                if msg.nickname:
+                    user_map[msg.user_id] = msg.nickname
+            
+            if self.debug_mode and user_map:
+                print(f"[DEBUG] 构建用户映射: {len(user_map)} 个用户")
+                
+        except Exception as e:
+            if self.debug_mode:
+                print(f"[!] 构建用户映射失败: {e}")
+        
+        return user_map
+    
     def _check_message_length(self, content: str) -> bool:
         """检查消息长度。
         
@@ -1107,29 +1079,8 @@ class ChatPlugin(Plugin):
         Returns:
             响应事件。
         """
-        help_text = """【小音理的帮助菜单】
-你可以直接对我说：
-
-【人设相关】
-· "更改人设成xxx" - 修改我的人设
-· "查看人设" - 看当前人设
-· "恢复默认" - 恢复默认人设
-
-【对话管理】
-· "清除历史" - 清除对话记录
-· "查看历史" - 看最近对话
-
-【好感度系统】
-· "好感度" - 查看我们的关系值
-
-【总结功能】
-· "总结一下" - 总结最近1小时的聊天
-· "总结今天的聊天" - 支持自然语言表达时间
-
-我会理解你的自然语言指令，直接说出来就好~"""
-        
         return ResponseEvent(
-            content=help_text,
+            content=self.prompts.help_text,
             target_user_id=event.user_id,
             target_group_id=event.group_id,
             reply_to_message_id=event.message_id if event.is_group else None

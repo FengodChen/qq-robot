@@ -26,19 +26,7 @@ class SummaryService:
         ... )
     """
     
-    # 固定的总结指令（与人设独立，无论人设如何变化都保持不变）
-    SUMMARY_INSTRUCTIONS = """【总结要求】
-1. 语气要符合你的人设，温柔自然，不要太正式或生硬
-2. 使用适合QQ聊天的格式，不要使用Markdown（如 **粗体**、*斜体*、# 标题等）
-3. 可以使用QQ表情符号（如 ✨、🌟、💕、😊 等）增加亲和力
-4. 分点总结，格式示例：
-   💬 主要话题：xxx
-   👥 活跃群友：xxx、xxx
-   ✨ 有趣内容：xxx
-5. 可以适当加入一些温馨的互动感，比如"大家聊得很开心呢~"
-6. 内容详略得当，自然流畅即可，不需要刻意压缩字数
-
-请用纯文本格式输出总结。"""
+    pass  # 总结指令现在从配置读取
     
     def __init__(
         self,
@@ -70,7 +58,7 @@ class SummaryService:
         return "你说话温柔体贴，像一个关心大家的朋友。"
     
     def _build_system_prompt(self, custom_persona: Optional[str] = None) -> str:
-        """构建 System Prompt：人设 + 固定总结指令。
+        """构建 System Prompt：人设 + 总结指令。
         
         Args:
             custom_persona: 自定义人设，为 None 时使用 default_persona
@@ -79,7 +67,8 @@ class SummaryService:
             完整的 system prompt
         """
         persona_text = custom_persona if custom_persona else self.default_persona
-        return f"你是一个群聊总结助手。请根据以下人设来生成总结：\n\n{persona_text}\n\n{self.SUMMARY_INSTRUCTIONS}"
+        summary_instructions = self.config.prompts.summary.instructions
+        return f"你是一个群聊总结助手。请根据以下人设来生成总结：\n\n{persona_text}\n\n{summary_instructions}"
     
     async def generate_summary(
         self,

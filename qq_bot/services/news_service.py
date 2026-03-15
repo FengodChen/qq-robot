@@ -98,7 +98,7 @@ class NewsService:
                     "content": [
                         {
                             "type": "input_text",
-                            "text": "你是一个新闻助手。请使用 web_search 工具搜索今天的最新真实新闻，提供简洁准确的新闻摘要。"
+                            "text": self.news_config.system_prompt
                         }
                     ]
                 },
@@ -107,7 +107,7 @@ class NewsService:
                     "content": [
                         {
                             "type": "input_text",
-                            "text": f"请搜索今天（{today}）的最新重要新闻，列出3-5条真实新闻，每条用一句话概括，总字数控制在200字以内。"
+                            "text": self.news_config.user_prompt.format(date=today)
                         }
                     ]
                 }

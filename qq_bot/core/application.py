@@ -204,7 +204,8 @@ class Application:
         """设置意图分类器。"""
         self._intent_classifier = IntentClassifier(
             llm_service=self._llm_service,
-            debug_mode=self.config.debug.enabled
+            debug_mode=self.config.debug.enabled,
+            prompts=self.config.prompts.agent
         )
         print("[*] 意图分类器已初始化")
     

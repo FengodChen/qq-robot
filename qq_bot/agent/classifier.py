@@ -8,7 +8,6 @@ import re
 from typing import Any, Optional
 
 from qq_bot.agent.intents import IntentResult, IntentType
-from qq_bot.agent.prompts import IntentPrompts
 from qq_bot.core.exceptions import IntentError, LLMError
 from qq_bot.services.llm.base import ChatMessage, LLMService
 from qq_bot.utils.debug_logger import log_llm_context, log_compact_debug
@@ -35,16 +34,19 @@ class IntentClassifier:
     def __init__(
         self,
         llm_service: Optional[LLMService] = None,
-        debug_mode: bool = False
+        debug_mode: bool = False,
+        prompts: Any = None
     ):
         """初始化意图分类器。
         
         Args:
             llm_service: LLM 服务实例，用于 AI 意图识别
             debug_mode: 是否启用调试模式
+            prompts: Agent 提示词配置
         """
         self.llm_service = llm_service
         self.debug_mode = debug_mode
+        self.prompts = prompts
     
     async def classify_intent(
         self,
@@ -107,13 +109,10 @@ class IntentClassifier:
             messages = [
                 ChatMessage(
                     role="system",
-                    content=IntentPrompts.PERSONA_EXTRACTION_SYSTEM
+                    content=self.prompts.persona_extraction
                 ),
                 ChatMessage(role="user", content=message)
             ]
-            
-            if self.debug_mode:
-                log_llm_context("人设提取上下文", messages)
             
             response = await self.llm_service.chat(
                 messages=messages,
@@ -154,13 +153,10 @@ class IntentClassifier:
         messages = [
             ChatMessage(
                 role="system",
-                content=IntentPrompts.INTENT_CLASSIFICATION_SYSTEM
+                content=self.prompts.intent_classification
             ),
             ChatMessage(role="user", content=message)
         ]
-        
-        if self.debug_mode:
-            log_llm_context("意图识别上下文", messages)
         
         response = await self.llm_service.chat(
             messages=messages,
