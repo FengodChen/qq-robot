@@ -6,8 +6,9 @@
 import json
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 from qq_bot.core.plugin import Plugin, PluginInfo
 from qq_bot.core.context import Context
@@ -20,6 +21,22 @@ from qq_bot.utils.text import convert_at_to_text
 from qq_bot.plugins.chat.conversation import ConversationManager
 from qq_bot.plugins.chat.persona import PersonaManager, PersonaConfig
 from qq_bot.plugins.chat.affection import AffectionManager
+
+
+@dataclass
+class PendingConfirmation:
+    """待确认的操作。
+    
+    Attributes:
+        operation: 操作类型 ('reset_persona', 'clear_history', 'set_persona')
+        expire_time: 过期时间戳
+        event: 原始消息事件（用于获取用户信息和上下文）
+        data: 附加数据（如人设文本等）
+    """
+    operation: str
+    expire_time: float
+    event: MessageEvent
+    data: Dict[str, Any]
 
 
 class ChatPlugin(Plugin):
@@ -89,6 +106,12 @@ class ChatPlugin(Plugin):
         
         # 等待人设设置的状态
         self._pending_prompts: Dict[Tuple[int, int], bool] = {}
+        
+        # 待确认的敏感操作
+        self._pending_confirmations: Dict[Tuple[int, int], PendingConfirmation] = {}
+        
+        # 确认超时时间（从配置读取，默认300秒）
+        self._confirmation_timeout = getattr(ctx.config.chat, 'confirmation_timeout', 300)
     
     @property
     def info(self) -> PluginInfo:
@@ -224,6 +247,12 @@ class ChatPlugin(Plugin):
         elif intent == IntentType.VIEW_AFFECTION:
             return await self._cmd_affection(event, "")
         
+        elif intent == IntentType.CONFIRM:
+            return await self._handle_confirm(event)
+        
+        elif intent == IntentType.CANCEL:
+            return await self._handle_cancel(event)
+        
         elif intent == IntentType.HELP:
             return await self._cmd_help(event, "")
         
@@ -279,26 +308,40 @@ class ChatPlugin(Plugin):
                 reply_to_message_id=event.message_id if event.is_group else None
             )
         
-        # 清除历史记录和好感度
-        self.conversation.clear_context(event.group_id, event.user_id)
-        self.affection.reset_affection(event.group_id, event.user_id)
+        # 检查是否已有待确认的相同操作
+        pending = self._get_pending_confirmation(event)
+        if pending and pending.operation == 'set_persona':
+            return ResponseEvent(
+                content='⚠️ 您已经有一个设置人设的待确认操作，请回复"确认"执行或"取消"放弃~',
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=event.message_id if event.is_group else None
+            )
         
-        # 设置新人设
-        self.conversation.set_custom_prompt(event.group_id, event.user_id, persona_text)
+        # 设置待确认状态
+        self._set_pending_confirmation(event, 'set_persona', {'persona_text': persona_text})
         
-        preview = persona_text[:50] + "..." if len(persona_text) > 50 else persona_text
+        # 计算超时分钟数
+        timeout_minutes = self._confirmation_timeout // 60
         
-        msg = (
-            "✨ 【人设已更新】✨\n"
+        # 显示人设预览
+        preview = persona_text[:80] + "..." if len(persona_text) > 80 else persona_text
+        
+        confirm_msg = (
+            "⚠️ 【敏感操作确认】⚠️\n"
             "━━━━━━━━━━━━━━\n"
-            f"📝 {preview}\n"
-            "━━━━━━━━━━━━━━\n"
-            "🗑️ 对话历史已清除\n"
-            "💕 好感度已重置"
+            "您即将设置新人设：\n\n"
+            f"📝 {preview}\n\n"
+            "此操作将：\n"
+            "🗑️ 清除现有对话历史\n"
+            "💕 重置好感度为初始值\n"
+            "✨ 应用新的角色设定\n\n"
+            '请回复"确认"继续，或回复"取消"放弃\n'
+            f"（{timeout_minutes}分钟内有效）"
         )
         
         return ResponseEvent(
-            content=msg,
+            content=confirm_msg,
             target_user_id=event.user_id,
             target_group_id=event.group_id,
             reply_to_message_id=event.message_id if event.is_group else None
@@ -589,8 +632,10 @@ class ChatPlugin(Plugin):
             return 0, ""
         
         # 获取关系等级描述
-        level = self.affection.get_affection_level(current_affection)
-        level_desc = self.prompts.level_descriptions.get(level, "关系状态未知")
+        # ========== 修改：使用人设对应的等级名称和描述 ==========
+        level = self.affection.get_affection_level(current_affection, persona_text)
+        level_desc = self.affection.get_level_description(level, persona_text)
+        # ========== 修改结束 ==========
         
         # 格式化对话历史（取最近5条，不包括当前消息）
         history_text = ""
@@ -758,9 +803,12 @@ class ChatPlugin(Plugin):
         messages.append(ChatMessage(role="system", content=system_prompt))
         
         # 2. 系统提示词 - 好感度状态（包含预计变化）
+        # ========== 修改：传递人设信息 ==========
+        persona_text = custom_prompt if custom_prompt else None
         affection_prompt = self._build_affection_prompt_with_change(
-            event.group_id, event.user_id, pending_change, change_reason
+            event.group_id, event.user_id, pending_change, change_reason, persona_text
         )
+        # ========== 修改结束 ==========
         messages.append(ChatMessage(role="system", content=affection_prompt))
         
         # 3. 系统提示词 - 聊天要求
@@ -892,7 +940,8 @@ class ChatPlugin(Plugin):
         group_id: int,
         user_id: int,
         pending_change: int,
-        change_reason: str
+        change_reason: str,
+        persona_text: str = None  # 新增参数
     ) -> str:
         """构建包含预计好感度变化的prompt。
         
@@ -901,15 +950,20 @@ class ChatPlugin(Plugin):
             user_id: 用户 ID。
             pending_change: 预计的好感度变化值。
             change_reason: 变化原因。
+            persona_text: 人设文本，用于获取对应的好感度配置。
         
         Returns:
             好感度相关的系统提示词。
         """
         value = self.affection.get_affection_value(group_id, user_id)
-        level = self.affection.get_affection_level(value)
+        # ========== 修改：使用人设对应的等级名称 ==========
+        level = self.affection.get_affection_level(value, persona_text)
+        # ========== 修改结束 ==========
         
-        # 根据好感度等级生成语气描述
-        tone = self.prompts.tone_descriptions.get(level, "你对用户保持中立态度。")
+        # 根据人设获取语气描述
+        # ========== 修改：使用人设对应的语气描述 ==========
+        tone = self.affection.get_tone_description(level, persona_text)
+        # ========== 修改结束 ==========
         
         # 构建好感度变化描述
         if pending_change > 0:
@@ -955,6 +1009,10 @@ class ChatPlugin(Plugin):
         change = pre_evaluated_change
         reason = change_reason if change_reason else "用户互动"
         
+        # ========== 新增：记录旧值用于满好感度检查 ==========
+        old_value = self.affection.get_affection_value(event.group_id, event.user_id)
+        # ========== 新增结束 ==========
+        
         if change != 0:
             new_val, actual_change, _ = self.affection.update_affection(
                 event.group_id, event.user_id, change, reason, event.content, reply
@@ -965,7 +1023,18 @@ class ChatPlugin(Plugin):
         
         # 获取更新后的好感度状态
         current_value = self.affection.get_affection_value(event.group_id, event.user_id)
-        level = self.affection.get_affection_level(current_value)
+        
+        # ========== 新增：检查满好感度奖励 ==========
+        reward_msg = self.affection.check_max_affection_reward(
+            event.group_id, event.user_id, old_value, current_value
+        )
+        # ========== 新增结束 ==========
+        
+        # ========== 修改：使用人设对应的等级名称 ==========
+        custom_prompt = self.conversation.get_custom_prompt(event.group_id, event.user_id)
+        persona_text = custom_prompt if custom_prompt else None
+        level = self.affection.get_affection_level(current_value, persona_text)
+        # ========== 修改结束 ==========
         
         # 构建好感度显示信息（方案C：引导线连接）
         # 格式：💕 好感度 <关系> （分数/100） （增加/不变/下降emoji）<好感度变化>
@@ -987,6 +1056,11 @@ class ChatPlugin(Plugin):
         affection_line = f"\n\n────────────\n💕 {level}（{current_value}/100） {change_emoji}{change_text}"
         if change != 0:
             affection_line += f"\n╰─ {display_reason}"
+        
+        # ========== 新增：追加奖励消息 ==========
+        if reward_msg:
+            affection_line += reward_msg
+        # ========== 新增结束 ==========
         
         return reply + affection_line
     
@@ -1106,6 +1180,8 @@ class ChatPlugin(Plugin):
     async def _cmd_clean(self, event: MessageEvent, args: str) -> ResponseEvent:
         """清除历史命令。
         
+        先请求用户确认，确认后才执行清除操作。
+        
         Args:
             event: 消息事件。
             args: 命令参数。
@@ -1113,11 +1189,35 @@ class ChatPlugin(Plugin):
         Returns:
             响应事件。
         """
-        self.conversation.clear_context(event.group_id, event.user_id)
-        self.affection.reset_affection(event.group_id, event.user_id)
+        # 检查是否已有待确认的相同操作
+        pending = self._get_pending_confirmation(event)
+        if pending and pending.operation == 'clear_history':
+            return ResponseEvent(
+                content='⚠️ 您已经有一个清除对话历史的待确认操作，请回复"确认"执行或"取消"放弃~',
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=event.message_id if event.is_group else None
+            )
+        
+        # 设置待确认状态
+        self._set_pending_confirmation(event, 'clear_history')
+        
+        # 计算超时分钟数
+        timeout_minutes = self._confirmation_timeout // 60
+        
+        confirm_msg = (
+            "⚠️ 【敏感操作确认】⚠️\n"
+            "━━━━━━━━━━━━━━\n"
+            "您即将执行：清除对话历史\n\n"
+            "此操作将：\n"
+            "🗑️ 清除所有对话历史\n"
+            "💕 重置好感度为初始值\n\n"
+            f'请回复"确认"继续，或回复"取消"放弃\n'
+            f"（{timeout_minutes}分钟内有效）"
+        )
         
         return ResponseEvent(
-            content="已清除对话历史，好感度已重置！",
+            content=confirm_msg,
             target_user_id=event.user_id,
             target_group_id=event.group_id,
             reply_to_message_id=event.message_id if event.is_group else None
@@ -1198,6 +1298,8 @@ class ChatPlugin(Plugin):
     async def _cmd_reset(self, event: MessageEvent, args: str) -> ResponseEvent:
         """重置人设命令。
         
+        先请求用户确认，确认后才执行重置操作。
+        
         Args:
             event: 消息事件。
             args: 命令参数。
@@ -1205,6 +1307,207 @@ class ChatPlugin(Plugin):
         Returns:
             响应事件。
         """
+        # 检查是否已有待确认的相同操作
+        pending = self._get_pending_confirmation(event)
+        if pending and pending.operation == 'reset_persona':
+            return ResponseEvent(
+                content='⚠️ 您已经有一个恢复默认人设的待确认操作，请回复"确认"执行或"取消"放弃~',
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=event.message_id if event.is_group else None
+            )
+        
+        # 设置待确认状态
+        self._set_pending_confirmation(event, 'reset_persona')
+        
+        # 计算超时分钟数
+        timeout_minutes = self._confirmation_timeout // 60
+        
+        confirm_msg = (
+            "⚠️ 【敏感操作确认】⚠️\n"
+            "━━━━━━━━━━━━━━\n"
+            "您即将执行：恢复默认人设\n\n"
+            "此操作将：\n"
+            "🗑️ 清除所有对话历史\n"
+            "💕 重置好感度为初始值\n"
+            "🔄 恢复机器人默认人设\n\n"
+            f'请回复"确认"继续，或回复"取消"放弃\n'
+            f"（{timeout_minutes}分钟内有效）"
+        )
+        
+        return ResponseEvent(
+            content=confirm_msg,
+            target_user_id=event.user_id,
+            target_group_id=event.group_id,
+            reply_to_message_id=event.message_id if event.is_group else None
+        )
+    
+    async def _cmd_affection(self, event: MessageEvent, args: str) -> ResponseEvent:
+        """处理好感度查询命令。"""
+        # ========== 修改：获取人设信息 ==========
+        custom_prompt = self.conversation.get_custom_prompt(event.group_id, event.user_id)
+        persona_text = custom_prompt if custom_prompt else None
+        info = self.affection.format_affection_info(event.group_id, event.user_id, persona_text)
+        # ========== 修改结束 ==========
+        
+        hint = self.affection.get_personality_hint()
+        
+        content = f"{info}\n\n{hint}"
+        
+        return ResponseEvent(
+            content=content,
+            target_user_id=event.user_id,
+            target_group_id=event.group_id,
+            reply_to_message_id=event.message_id if event.is_group else None
+        )
+
+    
+    # ========== 敏感操作确认机制 ==========
+    
+    def _get_confirmation_key(self, event: MessageEvent) -> Tuple[int, int]:
+        """生成确认键。
+        
+        Args:
+            event: 消息事件。
+            
+        Returns:
+            (group_id, user_id) 元组。
+        """
+        return (event.group_id, event.user_id)
+    
+    def _cleanup_expired_confirmations(self) -> None:
+        """清理过期的待确认操作。"""
+        current_time = time.time()
+        expired_keys = [
+            key for key, pending in self._pending_confirmations.items()
+            if pending.expire_time < current_time
+        ]
+        for key in expired_keys:
+            del self._pending_confirmations[key]
+    
+    def _get_pending_confirmation(self, event: MessageEvent) -> Optional[PendingConfirmation]:
+        """获取待确认的操作（会自动清理过期记录）。
+        
+        Args:
+            event: 消息事件。
+            
+        Returns:
+            待确认的操作，如果没有则返回 None。
+        """
+        self._cleanup_expired_confirmations()
+        key = self._get_confirmation_key(event)
+        return self._pending_confirmations.get(key)
+    
+    def _set_pending_confirmation(
+        self, 
+        event: MessageEvent, 
+        operation: str, 
+        data: Dict[str, Any] = None
+    ) -> None:
+        """设置待确认的操作。
+        
+        Args:
+            event: 消息事件。
+            operation: 操作类型。
+            data: 附加数据。
+        """
+        key = self._get_confirmation_key(event)
+        expire_time = time.time() + self._confirmation_timeout
+        self._pending_confirmations[key] = PendingConfirmation(
+            operation=operation,
+            expire_time=expire_time,
+            event=event,
+            data=data or {}
+        )
+    
+    def _clear_pending_confirmation(self, event: MessageEvent) -> None:
+        """清除待确认的操作。
+        
+        Args:
+            event: 消息事件。
+        """
+        key = self._get_confirmation_key(event)
+        self._pending_confirmations.pop(key, None)
+    
+    async def _handle_confirm(self, event: MessageEvent) -> Optional[ResponseEvent]:
+        """处理确认意图。
+        
+        Args:
+            event: 消息事件。
+            
+        Returns:
+            响应事件。
+        """
+        pending = self._get_pending_confirmation(event)
+        
+        if not pending:
+            # 没有待确认的操作
+            return ResponseEvent(
+                content="当前没有需要确认的待执行操作~",
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=event.message_id if event.is_group else None
+            )
+        
+        # 清除待确认状态
+        self._clear_pending_confirmation(event)
+        
+        # 根据操作类型执行相应逻辑
+        if pending.operation == 'reset_persona':
+            return await self._execute_reset_persona(event)
+        elif pending.operation == 'clear_history':
+            return await self._execute_clear_history(event)
+        elif pending.operation == 'set_persona':
+            persona_text = pending.data.get('persona_text', '')
+            return await self._execute_set_persona(event, persona_text)
+        
+        return ResponseEvent(
+            content="操作已确认执行！",
+            target_user_id=event.user_id,
+            target_group_id=event.group_id,
+            reply_to_message_id=event.message_id if event.is_group else None
+        )
+    
+    async def _handle_cancel(self, event: MessageEvent) -> Optional[ResponseEvent]:
+        """处理取消意图。
+        
+        Args:
+            event: 消息事件。
+            
+        Returns:
+            响应事件。
+        """
+        pending = self._get_pending_confirmation(event)
+        
+        if not pending:
+            # 没有待确认的操作
+            return ResponseEvent(
+                content="当前没有需要取消的待执行操作~",
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=event.message_id if event.is_group else None
+            )
+        
+        # 清除待确认状态
+        self._clear_pending_confirmation(event)
+        
+        # 获取操作的中文名称
+        operation_names = {
+            'reset_persona': '恢复默认人设',
+            'clear_history': '清除对话历史',
+            'set_persona': '设置新人设'
+        }
+        op_name = operation_names.get(pending.operation, '操作')
+        
+        return ResponseEvent(
+            content=f"✅ 已取消{op_name}操作~",
+            target_user_id=event.user_id,
+            target_group_id=event.group_id,
+            reply_to_message_id=event.message_id if event.is_group else None
+        )
+    
+    async def _execute_reset_persona(self, event: MessageEvent) -> ResponseEvent:
+        """执行人设重置（确认后）。"""
         self.conversation.clear_custom_prompt(event.group_id, event.user_id)
         self.conversation.clear_context(event.group_id, event.user_id)
         self.affection.reset_affection(event.group_id, event.user_id)
@@ -1226,21 +1529,56 @@ class ChatPlugin(Plugin):
             reply_to_message_id=event.message_id if event.is_group else None
         )
     
-    async def _cmd_affection(self, event: MessageEvent, args: str) -> ResponseEvent:
-        """好感度命令。
-        
-        Args:
-            event: 消息事件。
-            args: 命令参数。
-        
-        Returns:
-            响应事件。
-        """
-        info = self.affection.format_affection_info(event.group_id, event.user_id)
-        hint = self.affection.get_personality_hint()
+    async def _execute_clear_history(self, event: MessageEvent) -> ResponseEvent:
+        """执行清除历史（确认后）。"""
+        self.conversation.clear_context(event.group_id, event.user_id)
+        self.affection.reset_affection(event.group_id, event.user_id)
         
         return ResponseEvent(
-            content=f"{info}\n\n{hint}",
+            content="🗑️ 已清除对话历史，好感度已重置！",
+            target_user_id=event.user_id,
+            target_group_id=event.group_id,
+            reply_to_message_id=event.message_id if event.is_group else None
+        )
+    
+    async def _execute_set_persona(
+        self, 
+        event: MessageEvent, 
+        persona_text: str
+    ) -> ResponseEvent:
+        """执行设置人设（确认后）。"""
+        # 清除历史记录和好感度
+        self.conversation.clear_context(event.group_id, event.user_id)
+        self.affection.reset_affection(event.group_id, event.user_id)
+        
+        # 设置新人设
+        self.conversation.set_custom_prompt(event.group_id, event.user_id, persona_text)
+        
+        # 生成好感度配置预览
+        config_preview = ""
+        try:
+            config = await self.affection.generate_affection_config_for_persona(persona_text)
+            level_neg = config.level_names.get((-100, -99), "死敌")
+            level_zero = config.level_names.get((0, 15), "陌生")
+            level_max = config.level_names.get((100, 101), "灵魂伴侣")
+            config_preview = f"\n💕 好感度阶段: {level_neg} → {level_zero} → {level_max}"
+        except Exception as e:
+            print(f"[!] 生成好感度配置预览失败: {e}")
+        
+        preview = persona_text[:50] + "..." if len(persona_text) > 50 else persona_text
+        
+        msg = (
+            "✨ 【人设已更新】✨\n"
+            "━━━━━━━━━━━━━━\n"
+            f"📝 {preview}\n"
+            "━━━━━━━━━━━━━━\n"
+            "🗑️ 对话历史已清除\n"
+            "💕 好感度已重置"
+            f"{config_preview}"
+        )
+        
+        return ResponseEvent(
+            content=msg,
             target_user_id=event.user_id,
             target_group_id=event.group_id,
             reply_to_message_id=event.message_id if event.is_group else None

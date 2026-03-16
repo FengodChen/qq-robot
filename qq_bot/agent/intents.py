@@ -20,6 +20,8 @@ class IntentType(Enum):
         CLEAR_HISTORY: 清除历史
         VIEW_HISTORY: 查看历史
         VIEW_AFFECTION: 查看好感度
+        CONFIRM: 确认操作
+        CANCEL: 取消操作
         HELP: 帮助
         UNKNOWN: 未知意图
     """
@@ -32,6 +34,8 @@ class IntentType(Enum):
     CLEAR_HISTORY = "clear_history"  # 清除历史
     VIEW_HISTORY = "view_history"    # 查看历史
     VIEW_AFFECTION = "view_affection"  # 查看好感度
+    CONFIRM = "confirm"              # 确认操作
+    CANCEL = "cancel"                # 取消操作
     HELP = "help"                    # 帮助
     UNKNOWN = "unknown"              # 未知
 

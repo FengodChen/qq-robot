@@ -60,6 +60,7 @@ class ChatPluginConfig(BaseModel):
     group_context_messages: int
     dynamic_persona_enabled: bool = True
     affection_enabled: bool = True
+    confirmation_timeout: int = 300  # 敏感操作确认超时时间（秒）
 
 
 class SummaryPluginConfig(BaseModel):

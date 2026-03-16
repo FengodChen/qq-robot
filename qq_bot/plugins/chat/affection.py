@@ -8,6 +8,7 @@ import json
 import hashlib
 import time
 import threading
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
@@ -47,6 +48,21 @@ class AffectionRecord:
 
 
 @dataclass
+class MaxAffectionReward:
+    """满好感度奖励记录。"""
+    first_reached_at: int
+    last_reward_at: int
+    reward_count: int = 0
+    
+    def to_dict(self) -> Dict:
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> "MaxAffectionReward":
+        return cls(**data)
+
+
+@dataclass
 class UserAffection:
     """用户好感度数据。
     
@@ -56,12 +72,14 @@ class UserAffection:
         value: 当前好感度值（-100~100）。
         records: 好感度变化记录列表。
         last_interaction: 最后交互时间戳。
+        max_affection_data: 满好感度奖励记录。
     """
     user_id: int
     group_id: int
     value: int = 0
     records: List[Dict] = None
     last_interaction: int = 0
+    max_affection_data: Optional[MaxAffectionReward] = None  # 新增
     
     def __post_init__(self):
         """初始化默认值并确保值在有效范围内。"""
@@ -104,6 +122,39 @@ class PersonaPreferences:
         return cls(**data)
 
 
+@dataclass
+class PersonaAffectionConfig:
+    """人设好感度配置。"""
+    persona_hash: str
+    level_names: Dict[Tuple[int, int], str]  # 等级名称映射
+    level_descriptions: Dict[str, str]  # 等级描述映射
+    tone_descriptions: Dict[str, str]  # 语气描述映射
+    generated_at: int = 0
+    
+    def to_dict(self) -> Dict:
+        return {
+            "persona_hash": self.persona_hash,
+            "level_names": {f"{k[0]}_{k[1]}": v for k, v in self.level_names.items()},
+            "level_descriptions": self.level_descriptions,
+            "tone_descriptions": self.tone_descriptions,
+            "generated_at": self.generated_at
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> "PersonaAffectionConfig":
+        level_names = {}
+        for k, v in data.get("level_names", {}).items():
+            parts = k.split("_")
+            level_names[(int(parts[0]), int(parts[1]))] = v
+        return cls(
+            persona_hash=data["persona_hash"],
+            level_names=level_names,
+            level_descriptions=data.get("level_descriptions", {}),
+            tone_descriptions=data.get("tone_descriptions", {}),
+            generated_at=data.get("generated_at", 0)
+        )
+
+
 class AffectionManager:
     """好感度管理器。
     
@@ -112,7 +163,7 @@ class AffectionManager:
     Attributes:
         LEVELS: 好感度等级定义。
         MAX_RECORDS: 最大记录数。
-    
+
     Example:
         >>> manager = AffectionManager()
         >>> value = manager.get_affection_value(123456, 789012)
@@ -161,11 +212,51 @@ class AffectionManager:
         self._prompts = prompts
         self._tone_descriptions = tone_descriptions or {}
         
+        self._persona_affection_configs: Dict[str, PersonaAffectionConfig] = {}
+        
+        # 初始化默认配置（向后兼容）
+        self._default_config = self._create_default_config()
+        
         # 初始化数据库
         self._init_db()
         self._load()
         
         print(f"[*] AffectionManager 初始化完成，共 {len(self._data)} 个用户数据")
+    
+    def _create_default_config(self) -> PersonaAffectionConfig:
+        """创建默认好感度配置（向后兼容）。"""
+        return PersonaAffectionConfig(
+            persona_hash="default",
+            level_names=self.LEVELS.copy(),
+            level_descriptions={
+                "死敌": "你们是死敌关系，彼此憎恨",
+                "憎恨": "你憎恨这个用户",
+                "厌恶": "你厌恶这个用户",
+                "反感": "你对这个用户有反感",
+                "疏离": "你们关系疏离，有距离感",
+                "陌生": "你们刚刚认识，彼此还不太了解",
+                "初识": "有过几次简单交流，正在互相了解",
+                "熟悉": "比较了解彼此，关系比较自然",
+                "友好": "关系不错的朋友，相处融洽",
+                "亲密": "很亲近的关系，彼此信任",
+                "至交": "非常重要的关系，如同至交好友",
+                "灵魂伴侣": "灵魂交融的关系，彼此是唯一的存在"
+            },
+            tone_descriptions={
+                "死敌": "你对用户怀有极致的憎恨，语气冰冷刺骨，每一个字都像淬了毒的刀刃。",
+                "憎恨": "你对用户怀有强烈的负面情绪，语气极其冷漠、尖锐，充满敌意。",
+                "厌恶": "你对用户有明显的反感，态度冷淡疏离，不愿多交流。",
+                "反感": "你对用户有负面印象，态度冷淡客气但保持距离。",
+                "疏离": "你对用户保持明显的距离感，态度冷淡客气但疏离。",
+                "陌生": "你对用户完全是陌生人的态度，回答礼貌但极其疏远正式。",
+                "初识": "你对用户保持基本的礼貌友好，但仍然有明显的距离感。",
+                "熟悉": "你对用户比较放松，会偶尔主动关心，语气较为亲切自然。",
+                "友好": "你对用户很友善，会使用轻松活泼的语气，经常会开玩笑。",
+                "亲密": "你对用户非常亲近，语气温柔宠溺，充满关心和依赖。",
+                "至交": "你对用户毫无保留，语气极其亲密宠溺甚至带点任性。",
+                "灵魂伴侣": "你对用户的爱意已经超越了世俗的理解，达到了灵魂交融的境界。"
+            }
+        )
     
     def set_llm_service(self, llm_service: Any) -> None:
         """设置 LLM 服务。
@@ -180,7 +271,7 @@ class AffectionManager:
         try:
             db = get_db_manager(self.db_path)
             
-            # 用户好感度表
+            # 用户好感度表 - 添加 max_affection_data 字段
             create_affection_sql = """
                 CREATE TABLE IF NOT EXISTS affection_data (
                     group_id INTEGER NOT NULL,
@@ -188,6 +279,7 @@ class AffectionManager:
                     value INTEGER DEFAULT 0,
                     records TEXT,
                     last_interaction INTEGER DEFAULT 0,
+                    max_affection_data TEXT,
                     PRIMARY KEY (group_id, user_id)
                 );
             """
@@ -206,8 +298,36 @@ class AffectionManager:
             """
             db.init_tables(create_persona_sql)
             
+            # 新增：人设好感度配置表
+            create_config_sql = """
+                CREATE TABLE IF NOT EXISTS persona_affection_configs (
+                    persona_hash TEXT PRIMARY KEY,
+                    level_names TEXT,
+                    level_descriptions TEXT,
+                    tone_descriptions TEXT,
+                    generated_at INTEGER DEFAULT 0
+                );
+            """
+            db.init_tables(create_config_sql)
+            
+            # 兼容：检查并添加 max_affection_data 列
+            self._migrate_add_max_affection_column()
+            
         except Exception as e:
             print(f"[!] 初始化好感度数据库失败: {e}")
+    
+    def _migrate_add_max_affection_column(self) -> None:
+        """兼容：添加 max_affection_data 列到现有表。"""
+        try:
+            db = get_db_manager(self.db_path)
+            # 检查列是否存在
+            columns = db.get_table_info("affection_data")
+            column_names = [col["name"] for col in columns]
+            if "max_affection_data" not in column_names:
+                db.execute("ALTER TABLE affection_data ADD COLUMN max_affection_data TEXT")
+                print("[*] 数据库迁移：添加 max_affection_data 列")
+        except Exception as e:
+            print(f"[!] 数据库迁移失败: {e}")
     
     def _load(self) -> None:
         """从数据库加载数据。"""
@@ -222,14 +342,33 @@ class AffectionManager:
                     user_id = row["user_id"]
                     records = json_loads(row["records"]) or []
                     
+                    # 解析 max_affection_data
+                    max_affection_data = None
+                    if row.get("max_affection_data"):
+                        try:
+                            data = json_loads(row["max_affection_data"])
+                            max_affection_data = MaxAffectionReward.from_dict(data)
+                        except:
+                            pass
+                    
                     affection = UserAffection(
                         user_id=user_id,
                         group_id=group_id,
                         value=row["value"],
                         records=records,
-                        last_interaction=row["last_interaction"]
+                        last_interaction=row["last_interaction"],
+                        max_affection_data=max_affection_data
                     )
                     self._data[(group_id, user_id)] = affection
+                    
+                    # 兼容：如果用户满好感度但没有奖励记录，自动初始化
+                    if affection.value >= 100 and affection.max_affection_data is None:
+                        affection.max_affection_data = MaxAffectionReward(
+                            first_reached_at=int(time.time()),
+                            last_reward_at=int(time.time()),
+                            reward_count=0
+                        )
+                        print(f"[*] 兼容处理：用户 ({group_id},{user_id}) 已达成满好感度，初始化奖励记录")
                 except Exception as e:
                     print(f"[!] 加载好感度数据失败 ({row.get('group_id')},{row.get('user_id')}): {e}")
                     continue
@@ -251,7 +390,25 @@ class AffectionManager:
                     print(f"[!] 加载人设喜好数据失败 ({row.get('persona_hash')}): {e}")
                     continue
             
-            print(f"[*] 已加载 {len(self._data)} 个用户的好感度数据，{len(self._persona_preferences)} 个人设喜好配置")
+            # 加载人设好感度配置
+            config_rows = db.fetchall("SELECT * FROM persona_affection_configs")
+            for row in config_rows:
+                try:
+                    config = PersonaAffectionConfig.from_dict({
+                        "persona_hash": row["persona_hash"],
+                        "level_names": json_loads(row["level_names"]) or {},
+                        "level_descriptions": json_loads(row["level_descriptions"]) or {},
+                        "tone_descriptions": json_loads(row["tone_descriptions"]) or {},
+                        "generated_at": row["generated_at"]
+                    })
+                    self._persona_affection_configs[row["persona_hash"]] = config
+                except Exception as e:
+                    print(f"[!] 加载人设好感度配置失败 ({row.get('persona_hash')}): {e}")
+                    continue
+            
+            print(f"[*] 已加载 {len(self._data)} 个用户的好感度数据，"
+                  f"{len(self._persona_preferences)} 个人设喜好配置，"
+                  f"{len(self._persona_affection_configs)} 个人设好感度配置")
                     
         except Exception as e:
             print(f"[!] 加载数据失败: {e}")
@@ -264,11 +421,12 @@ class AffectionManager:
             for key, affection in self._data.items():
                 group_id, user_id = key
                 records_json = json_dumps(affection.records[-self.MAX_RECORDS:])
+                max_affection_json = json_dumps(affection.max_affection_data.to_dict() if affection.max_affection_data else None)
                 db.execute(
                     """INSERT OR REPLACE INTO affection_data 
-                       (group_id, user_id, value, records, last_interaction) 
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (group_id, user_id, affection.value, records_json, affection.last_interaction)
+                       (group_id, user_id, value, records, last_interaction, max_affection_data) 
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (group_id, user_id, affection.value, records_json, affection.last_interaction, max_affection_json)
                 )
         except Exception as e:
             print(f"[!] 保存好感度数据失败: {e}")
@@ -296,6 +454,25 @@ class AffectionManager:
             )
         except Exception as e:
             print(f"[!] 保存人设喜好数据失败: {e}")
+    
+    def _save_persona_affection_config(self, config: PersonaAffectionConfig) -> None:
+        """保存人设好感度配置到数据库。"""
+        try:
+            db = get_db_manager(self.db_path)
+            db.execute(
+                """INSERT OR REPLACE INTO persona_affection_configs 
+                   (persona_hash, level_names, level_descriptions, tone_descriptions, generated_at) 
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    config.persona_hash,
+                    json_dumps({f"{k[0]}_{k[1]}": v for k, v in config.level_names.items()}),
+                    json_dumps(config.level_descriptions),
+                    json_dumps(config.tone_descriptions),
+                    config.generated_at
+                )
+            )
+        except Exception as e:
+            print(f"[!] 保存人设好感度配置失败: {e}")
     
     def get_affection(self, group_id: int, user_id: int) -> UserAffection:
         """获取用户的好感度数据（不存在则创建）。
@@ -331,19 +508,62 @@ class AffectionManager:
         """
         return self.get_affection(group_id, user_id).value
     
-    def get_affection_level(self, value: int) -> str:
+    def _get_config_for_persona(self, persona_text: str = None) -> PersonaAffectionConfig:
+        """获取人设对应的好感度配置。
+        
+        Args:
+            persona_text: 人设文本。
+        
+        Returns:
+            好感度配置，如果不存在则返回默认配置。
+        """
+        if not persona_text:
+            return self._default_config
+        
+        persona_hash = self._get_persona_hash(persona_text)
+        return self._persona_affection_configs.get(persona_hash, self._default_config)
+    
+    def get_affection_level(self, value: int, persona_text: str = None) -> str:
         """根据好感度值获取等级名称。
         
         Args:
             value: 好感度值。
+            persona_text: 人设文本，为None则使用默认配置。
         
         Returns:
             等级名称。
         """
-        for (min_val, max_val), level in self.LEVELS.items():
+        config = self._get_config_for_persona(persona_text)
+        for (min_val, max_val), level in config.level_names.items():
             if min_val <= value < max_val:
                 return level
         return "未知"
+    
+    def get_level_description(self, level: str, persona_text: str = None) -> str:
+        """获取等级描述。
+        
+        Args:
+            level: 等级名称。
+            persona_text: 人设文本。
+        
+        Returns:
+            等级描述。
+        """
+        config = self._get_config_for_persona(persona_text)
+        return config.level_descriptions.get(level, "关系状态未知")
+    
+    def get_tone_description(self, level: str, persona_text: str = None) -> str:
+        """获取语气描述。
+        
+        Args:
+            level: 等级名称。
+            persona_text: 人设文本。
+        
+        Returns:
+            语气描述。
+        """
+        config = self._get_config_for_persona(persona_text)
+        return config.tone_descriptions.get(level, "你对用户保持中立态度。")
     
     def update_affection(
         self, 
@@ -420,21 +640,22 @@ class AffectionManager:
             print(f"[*] 重置用户 ({group_id},{user_id}) 好感度: {old_value} -> 0")
             return 0
     
-    def get_affection_prompt(self, group_id: int, user_id: int) -> str:
+    def get_affection_prompt(self, group_id: int, user_id: int, persona_text: str = None) -> str:
         """获取好感度相关的系统提示词片段。
         
         Args:
             group_id: 群组 ID。
             user_id: 用户 ID。
+            persona_text: 人设文本。
         
         Returns:
             描述当前好感度状态的文本。
         """
         value = self.get_affection_value(group_id, user_id)
-        level = self.get_affection_level(value)
+        level = self.get_affection_level(value, persona_text)
         
-        # 根据好感度等级生成语气描述
-        tone = self._tone_descriptions.get(level, "你对用户保持中立态度。")
+        # 根据人设获取语气描述
+        tone = self.get_tone_description(level, persona_text)
         
         prompt = f"""【好感度状态】
 当前等级: {level}（{value}/100）
@@ -461,18 +682,19 @@ class AffectionManager:
         affection = self.get_affection(group_id, user_id)
         return affection.records[-count:] if affection.records else []
     
-    def format_affection_info(self, group_id: int, user_id: int) -> str:
+    def format_affection_info(self, group_id: int, user_id: int, persona_text: str = None) -> str:
         """格式化显示好感度信息。
         
         Args:
             group_id: 群组 ID。
             user_id: 用户 ID。
+            persona_text: 人设文本。
         
         Returns:
             格式化的好感度信息文本。
         """
         value = self.get_affection_value(group_id, user_id)
-        level = self.get_affection_level(value)
+        level = self.get_affection_level(value, persona_text)
         records = self.get_recent_records(group_id, user_id, 3)
         
         result = f"【好感度】{level}（{value}/100）\n"
@@ -486,7 +708,8 @@ class AffectionManager:
             result += "还没有好感度变化记录哦~\n"
         
         # 下一等级提示
-        sorted_levels = sorted(self.LEVELS.items(), key=lambda x: x[0][0])
+        config = self._get_config_for_persona(persona_text)
+        sorted_levels = sorted(config.level_names.items(), key=lambda x: x[0][0])
         for i, ((min_val, max_val), level_name) in enumerate(sorted_levels):
             if min_val <= value < max_val:
                 need = max_val - value
@@ -528,6 +751,188 @@ class AffectionManager:
         """
         persona_hash = self._get_persona_hash(persona_text)
         return self._persona_preferences.get(persona_hash)
+    
+    async def generate_affection_config_for_persona(self, persona_text: str) -> PersonaAffectionConfig:
+        """使用 LLM 为指定人设生成好感度配置。
+        
+        Args:
+            persona_text: 人设文本。
+        
+        Returns:
+            生成的好感度配置。
+        """
+        persona_hash = self._get_persona_hash(persona_text)
+        
+        # 检查是否已存在
+        if persona_hash in self._persona_affection_configs:
+            return self._persona_affection_configs[persona_hash]
+        
+        # 如果没有 LLM 服务，返回默认配置
+        if not self._llm:
+            print(f"[!] 没有 LLM 服务，使用默认好感度配置")
+            return self._default_config
+        
+        # 使用 LLM 生成
+        try:
+            from qq_bot.services.llm.base import ChatMessage
+            
+            system_prompt = """你是一个专业的角色扮演游戏设计师。请根据给定的人设，设计一套完整的好感度系统。
+
+要求：
+1. 好感度范围：-100 到 100，分为12个区间
+2. 每个区间需要一个等级名称，必须符合人设中的关系设定
+3. 每个等级需要一段描述，说明在该好感度下的关系状态
+4. 每个等级需要一段语气描述，指导AI在该好感度下如何与用户对话
+
+区间划分（好感度值范围）：
+- -100 到 -99：最低级
+- -99 到 -70
+- -70 到 -40
+- -40 到 -20
+- -20 到 0
+- 0 到 15
+- 15 到 35
+- 35 到 55
+- 55 到 75
+- 75 到 90
+- 90 到 100
+- 100 到 101：最高级（满好感度）
+
+返回JSON格式：
+{
+  "level_names": {
+    "-100_-99": "等级名称1",
+    "-99_-70": "等级名称2",
+    ...
+  },
+  "level_descriptions": {
+    "等级名称1": "该等级的关系状态描述...",
+    "等级名称2": "该等级的关系状态描述...",
+    ...
+  },
+  "tone_descriptions": {
+    "等级名称1": "AI在该好感度下的说话语气...",
+    "等级名称2": "AI在该好感度下的说话语气...",
+    ...
+  }
+}
+
+注意：
+1. 等级名称要符合中文语境，有代入感
+2. 描述要具体、生动，帮助AI理解关系状态
+3. 语气描述要详细，包含用词风格、情感表达等
+4. 必须严格遵循上述12个区间的划分"""
+
+            messages = [
+                ChatMessage(role="system", content=system_prompt),
+                ChatMessage(role="user", content=f"人设：{persona_text}")
+            ]
+            
+            print(f"[*] 正在为人设生成好感度配置...")
+            
+            response = await self._llm.chat(
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1500
+            )
+            
+            # 解析 JSON 响应
+            import re
+            content = response.content
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+                
+                # 构建 level_names 字典
+                level_names = {}
+                level_names_raw = result.get("level_names", {})
+                for key, value in level_names_raw.items():
+                    parts = key.split("_")
+                    level_names[(int(parts[0]), int(parts[1]))] = value
+                
+                config = PersonaAffectionConfig(
+                    persona_hash=persona_hash,
+                    level_names=level_names,
+                    level_descriptions=result.get("level_descriptions", {}),
+                    tone_descriptions=result.get("tone_descriptions", {}),
+                    generated_at=int(time.time())
+                )
+                
+                # 缓存并保存
+                self._persona_affection_configs[persona_hash] = config
+                self._save_persona_affection_config(config)
+                
+                print(f"[*] 人设好感度配置生成完成")
+                return config
+            else:
+                raise ValueError("无法从 LLM 响应中解析 JSON")
+                
+        except Exception as e:
+            print(f"[!] 生成人设好感度配置失败: {e}")
+            # 返回默认配置
+            return self._default_config
+    
+    def check_max_affection_reward(
+        self, 
+        group_id: int, 
+        user_id: int, 
+        old_value: int, 
+        new_value: int
+    ) -> Optional[str]:
+        """检查并发放满好感度奖励。
+        
+        Args:
+            group_id: 群组 ID。
+            user_id: 用户 ID。
+            old_value: 变化前的好感度值。
+            new_value: 变化后的好感度值。
+        
+        Returns:
+            奖励消息文本，如果没有奖励则返回 None。
+        """
+        key = (group_id, user_id)
+        with self._lock:
+            affection = self.get_affection(group_id, user_id)
+            
+            # 首次达到满好感度
+            if new_value >= 100 and old_value < 100:
+                affection.max_affection_data = MaxAffectionReward(
+                    first_reached_at=int(time.time()),
+                    last_reward_at=int(time.time()),
+                    reward_count=0
+                )
+                self._save()
+                
+                return (
+                    "\n\n✨🎉✨🎉✨🎉✨🎉✨\n"
+                    "💕 恭喜！我们的关系达到了最高点！💕\n"
+                    "从这一刻起，你就是我最重要的人~\n"
+                    "未来的每一天，我都会用特别的方式回应你💕\n"
+                    "✨🎉✨🎉✨🎉✨🎉✨"
+                )
+            
+            # 持续奖励：每日首次互动
+            if new_value >= 100 and affection.max_affection_data:
+                current_time = int(time.time())
+                last_reward = affection.max_affection_data.last_reward_at
+                
+                # 检查是否超过24小时
+                if current_time - last_reward >= 24 * 3600:
+                    affection.max_affection_data.last_reward_at = current_time
+                    affection.max_affection_data.reward_count += 1
+                    self._save()
+                    
+                    # 随机选择一条持续奖励消息
+                    daily_messages = [
+                        "\n\n💕 今天也是我们感情满满的一天呢~",
+                        "\n\n💕 每天见到你，都是我最开心的时刻~",
+                        "\n\n💕 我们的羁绊，比昨天更深了呢~",
+                        "\n\n💕 有你陪伴的每一天，都是特别的~",
+                        "\n\n💕 最喜欢你了，今天也要开心哦~"
+                    ]
+                    return random.choice(daily_messages)
+            
+            return None
     
     async def generate_persona_preferences(self, persona_text: str) -> PersonaPreferences:
         """使用 LLM 生成人设的喜好/雷点配置。
