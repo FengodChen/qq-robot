@@ -324,8 +324,8 @@ class ChatPlugin(Plugin):
         # 计算超时分钟数
         timeout_minutes = self._confirmation_timeout // 60
         
-        # 显示人设预览
-        preview = persona_text[:80] + "..." if len(persona_text) > 80 else persona_text
+        # 显示人设预览（完整内容）
+        preview = persona_text
         
         confirm_msg = (
             "⚠️ 【敏感操作确认】⚠️\n"
@@ -464,12 +464,10 @@ class ChatPlugin(Plugin):
         # 设置新人设
         self.conversation.set_custom_prompt(event.group_id, event.user_id, persona_text)
         
-        preview = persona_text[:50] + "..." if len(persona_text) > 50 else persona_text
-        
         msg = (
             "✨ 【人设已更新】✨\n"
             "━━━━━━━━━━━━━━\n"
-            f"📝 {preview}\n"
+            f"📝 {persona_text}\n"
             "━━━━━━━━━━━━━━\n"
             "🗑️ 对话历史已清除\n"
             "💕 好感度已重置"
@@ -1050,8 +1048,8 @@ class ChatPlugin(Plugin):
             change_emoji = "➡️"
             change_text = "0"
         
-        # 格式化原因（限制长度）
-        display_reason = reason[:15] + "..." if len(reason) > 15 else reason
+        # 格式化原因（显示完整内容）
+        display_reason = reason
         
         affection_line = f"\n\n────────────\n💕 {level}（{current_value}/100） {change_emoji}{change_text}"
         if change != 0:
@@ -1282,11 +1280,9 @@ class ChatPlugin(Plugin):
         custom_prompt = self.conversation.get_custom_prompt(event.group_id, event.user_id)
         
         if custom_prompt:
-            preview = custom_prompt[:100] + "..." if len(custom_prompt) > 100 else custom_prompt
-            msg = f"【当前人设】(自定义)\n{preview}\n\n对我说「恢复默认」可以恢复默认人设"
+            msg = f"【当前人设】(自定义)\n{custom_prompt}\n\n对我说「恢复默认」可以恢复默认人设"
         else:
-            default = self.system_prompt[:100] + "..." if len(self.system_prompt) > 100 else self.system_prompt
-            msg = f"【当前人设】(默认)\n{default}\n\n对我说「更改人设成xxx」可以修改人设"
+            msg = f"【当前人设】(默认)\n{self.system_prompt}\n\n对我说「更改人设成xxx」可以修改人设"
         
         return ResponseEvent(
             content=msg,
@@ -1565,12 +1561,10 @@ class ChatPlugin(Plugin):
         except Exception as e:
             print(f"[!] 生成好感度配置预览失败: {e}")
         
-        preview = persona_text[:50] + "..." if len(persona_text) > 50 else persona_text
-        
         msg = (
             "✨ 【人设已更新】✨\n"
             "━━━━━━━━━━━━━━\n"
-            f"📝 {preview}\n"
+            f"📝 {persona_text}\n"
             "━━━━━━━━━━━━━━\n"
             "🗑️ 对话历史已清除\n"
             "💕 好感度已重置"
