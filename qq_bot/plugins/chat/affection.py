@@ -313,6 +313,9 @@ class AffectionManager:
             # 兼容：检查并添加 max_affection_data 列
             self._migrate_add_max_affection_column()
             
+            # 兼容：修复 persona_affection_configs 表结构
+            self._migrate_fix_persona_affection_configs_table()
+            
         except Exception as e:
             print(f"[!] 初始化好感度数据库失败: {e}")
     
@@ -326,6 +329,67 @@ class AffectionManager:
             if "max_affection_data" not in column_names:
                 db.execute("ALTER TABLE affection_data ADD COLUMN max_affection_data TEXT")
                 print("[*] 数据库迁移：添加 max_affection_data 列")
+        except Exception as e:
+            print(f"[!] 数据库迁移失败: {e}")
+    
+    def _migrate_fix_persona_affection_configs_table(self) -> None:
+        """迁移：修复 persona_affection_configs 表结构。
+        
+        旧表有 group_id/user_id 列，新表应该只有 persona_hash 作为唯一键。
+        """
+        try:
+            db = get_db_manager(self.db_path)
+            columns = db.get_table_info("persona_affection_configs")
+            column_names = [col["name"] for col in columns]
+            
+            # 检查是否需要迁移（有 group_id 列表示旧表结构）
+            if "group_id" not in column_names:
+                return  # 已经是新表结构，不需要迁移
+            
+            print("[*] 数据库迁移：修复 persona_affection_configs 表结构...")
+            
+            # 1. 重命名旧表
+            db.execute("ALTER TABLE persona_affection_configs RENAME TO persona_affection_configs_old")
+            
+            # 2. 创建新表（正确结构）
+            create_new_sql = """
+                CREATE TABLE persona_affection_configs (
+                    persona_hash TEXT PRIMARY KEY,
+                    level_names TEXT,
+                    level_descriptions TEXT,
+                    tone_descriptions TEXT,
+                    generated_at INTEGER DEFAULT 0
+                );
+            """
+            db.init_tables(create_new_sql)
+            
+            # 3. 迁移数据（按 persona_hash 分组，取第一个）
+            rows = db.fetchall("""
+                SELECT DISTINCT persona_hash, level_names, level_descriptions, 
+                               tone_descriptions, generated_at
+                FROM persona_affection_configs_old
+                WHERE persona_hash IS NOT NULL
+            """)
+            
+            for row in rows:
+                db.execute(
+                    """INSERT OR REPLACE INTO persona_affection_configs 
+                       (persona_hash, level_names, level_descriptions, tone_descriptions, generated_at) 
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        row["persona_hash"],
+                        row["level_names"],
+                        row["level_descriptions"],
+                        row["tone_descriptions"],
+                        row["generated_at"] or int(time.time())
+                    )
+                )
+            
+            # 4. 删除旧表
+            db.execute("DROP TABLE persona_affection_configs_old")
+            
+            print(f"[*] 数据库迁移完成：已迁移 {len(rows)} 条人设好感度配置")
+            
         except Exception as e:
             print(f"[!] 数据库迁移失败: {e}")
     
