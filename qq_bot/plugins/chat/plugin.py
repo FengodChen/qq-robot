@@ -1908,9 +1908,9 @@ class ChatPlugin(Plugin):
         
         # 好感度等级
         if config:
-            level_neg = config.level_names.get((-100, -99), "<关系极差>")
-            level_zero = config.level_names.get((0, 15), "<关系初建>")
-            level_max = config.level_names.get((100, 101), "<关系圆满>")
+            level_neg = config.level_names.get((-100, -99), "<等级1>")
+            level_zero = config.level_names.get((0, 15), "<等级6>")
+            level_max = config.level_names.get((100, 101), "<等级12>")
             lines.extend([
                 "",
                 "💕 好感度等级",
