@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from qq_bot.core.config import BotConfig
 from qq_bot.core.context import Context, ServiceContainer
@@ -88,6 +88,10 @@ class Application:
         self._initialized = False
         self._shutdown_event = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
+        
+        # 用户级消息队列
+        self._user_queues: dict[Tuple[int, int], asyncio.Queue] = {}
+        self._user_processing_tasks: dict[Tuple[int, int], asyncio.Task] = {}
     
     @property
     def running(self) -> bool:
@@ -409,7 +413,18 @@ class Application:
             except Exception as e:
                 print(f"[!] 卸载插件失败: {e}")
         
-        # 4. 取消后台任务
+        # 4. 取消所有用户处理任务
+        for user_key, task in list(self._user_processing_tasks.items()):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._user_processing_tasks.clear()
+        self._user_queues.clear()
+        
+        # 5. 取消后台任务
         for task in list(self._tasks):
             if not task.done():
                 task.cancel()
@@ -418,7 +433,7 @@ class Application:
                 except asyncio.CancelledError:
                     pass
         
-        # 5. 清理消息存储
+        # 6. 清理消息存储
         if self._message_store:
             try:
                 self._message_store.cleanup_old_messages()
@@ -443,7 +458,48 @@ class Application:
         return f"[CQ:at,qq={self_id}]" in raw_message
     
     async def _handle_message(self, event: MessageEvent) -> None:
-        """消息处理主流程。
+        """消息处理入口，将消息放入用户专属队列。
+        
+        Args:
+            event: 消息事件。
+        """
+        user_key = (event.group_id, event.user_id)
+        
+        # 确保用户有队列
+        if user_key not in self._user_queues:
+            self._user_queues[user_key] = asyncio.Queue()
+            # 启动用户专属的处理任务
+            task = asyncio.create_task(self._process_user_messages(user_key))
+            self._user_processing_tasks[user_key] = task
+            task.add_done_callback(lambda t: self._user_processing_tasks.pop(user_key, None))
+        
+        # 将消息放入队列
+        await self._user_queues[user_key].put(event)
+
+    async def _process_user_messages(self, user_key: Tuple[int, int]) -> None:
+        """处理特定用户的消息队列。
+        
+        从队列中获取消息并按顺序处理，确保同一用户的消息顺序执行，
+        不同用户之间可以并发处理。
+        
+        Args:
+            user_key: 用户标识 (group_id, user_id)。
+        """
+        queue = self._user_queues[user_key]
+        try:
+            while True:
+                event = await queue.get()
+                try:
+                    await self._process_single_message(event)
+                except Exception as e:
+                    print(f"[!] 处理用户 {user_key} 的消息失败: {e}")
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            pass
+
+    async def _process_single_message(self, event: MessageEvent) -> None:
+        """处理单条消息（原 _handle_message 的逻辑）。
         
         处理流程：
         1. 存储消息

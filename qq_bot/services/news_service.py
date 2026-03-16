@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import requests
+import httpx
 
 from qq_bot.core.config import ArkConfig, NewsConfig
 
@@ -80,7 +80,7 @@ class NewsService:
             格式化的新闻内容
             
         Raises:
-            requests.RequestException: API 请求失败
+            httpx.HTTPError: API 请求失败
         """
         today = datetime.now().strftime("%Y年%m月%d日")
         
@@ -123,15 +123,16 @@ class NewsService:
             "temperature": 0.3
         }
         
-        response = requests.post(
-            f"{self.ark_config.base_url}/responses",
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-        response.raise_for_status()
-        
-        data = response.json()
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.ark_config.base_url}/responses",
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            response.raise_for_status()
+            
+            data = response.json()
         
         # 解析 Responses API 的返回结果
         content = self._parse_response(data)

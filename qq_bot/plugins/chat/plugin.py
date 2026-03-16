@@ -3,6 +3,7 @@
 实现 AI 聊天功能，支持人设定制、好感度系统和对话上下文管理。
 """
 
+import asyncio
 import json
 import re
 import time
@@ -1537,6 +1538,65 @@ class ChatPlugin(Plugin):
             reply_to_message_id=event.message_id if event.is_group else None
         )
     
+    async def _send_response(self, response: ResponseEvent) -> None:
+        """发送响应消息。
+        
+        Args:
+            response: 响应事件。
+        """
+        adapter = getattr(self.ctx, 'adapter', None)
+        if not adapter:
+            return
+        
+        try:
+            if response.target_group_id:
+                await adapter.send_group_message(
+                    group_id=response.target_group_id,
+                    content=response.content,
+                    reply_to_message_id=response.reply_to_message_id,
+                    at_user_id=response.target_user_id if response.at_user else None
+                )
+            else:
+                await adapter.send_private_message(
+                    user_id=response.target_user_id,
+                    content=response.content
+                )
+        except Exception as e:
+            print(f"[!] 发送响应失败: {e}")
+    
+    async def _generate_affection_config_in_background(
+        self, 
+        event: MessageEvent, 
+        persona_text: str
+    ) -> None:
+        """后台生成好感度配置并发送通知。"""
+        try:
+            config = await self.affection.generate_affection_config_for_persona(persona_text)
+            # 获取等级名称预览
+            level_neg = config.level_names.get((-100, -99), "死敌")
+            level_zero = config.level_names.get((0, 15), "陌生")
+            level_max = config.level_names.get((100, 101), "灵魂伴侣")
+            
+            # 发送完成通知
+            notification = (
+                "💕 【好感度系统已生成】\n"
+                f"等级阶段: {level_neg} → {level_zero} → {level_max}\n"
+                "现在可以开始新的对话了~"
+            )
+            
+            # 创建响应事件并发送
+            response = ResponseEvent(
+                content=notification,
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=None,
+                at_user=True
+            )
+            await self._send_response(response)
+            
+        except Exception as e:
+            print(f"[!] 后台生成好感度配置失败: {e}")
+    
     async def _execute_set_persona(
         self, 
         event: MessageEvent, 
@@ -1550,30 +1610,28 @@ class ChatPlugin(Plugin):
         # 设置新人设
         self.conversation.set_custom_prompt(event.group_id, event.user_id, persona_text)
         
-        # 生成好感度配置预览
-        config_preview = ""
-        try:
-            config = await self.affection.generate_affection_config_for_persona(persona_text)
-            level_neg = config.level_names.get((-100, -99), "死敌")
-            level_zero = config.level_names.get((0, 15), "陌生")
-            level_max = config.level_names.get((100, 101), "灵魂伴侣")
-            config_preview = f"\n💕 好感度阶段: {level_neg} → {level_zero} → {level_max}"
-        except Exception as e:
-            print(f"[!] 生成好感度配置预览失败: {e}")
-        
+        # 立即返回确认消息（不等待配置生成）
         msg = (
             "✨ 【人设已更新】✨\n"
             "━━━━━━━━━━━━━━\n"
             f"📝 {persona_text}\n"
             "━━━━━━━━━━━━━━\n"
             "🗑️ 对话历史已清除\n"
-            "💕 好感度已重置"
-            f"{config_preview}"
+            "💕 好感度已重置\n"
+            "💕 正在生成专属好感度系统..."
         )
         
-        return ResponseEvent(
+        # 先发送确认消息
+        response = ResponseEvent(
             content=msg,
             target_user_id=event.user_id,
             target_group_id=event.group_id,
             reply_to_message_id=event.message_id if event.is_group else None
         )
+        
+        # 后台生成好感度配置
+        asyncio.create_task(
+            self._generate_affection_config_in_background(event, persona_text)
+        )
+        
+        return response

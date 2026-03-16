@@ -3,10 +3,11 @@
 实现 DeepSeek API 调用。
 """
 
+import asyncio
 import json
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-import requests
+import httpx
 
 from qq_bot.services.llm.base import LLMService, ChatMessage, ChatResponse
 from qq_bot.core.exceptions import LLMError
@@ -53,6 +54,7 @@ class DeepSeekService(LLMService):
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+        self._semaphore = asyncio.Semaphore(5)  # 限制5个并发
     
 
     
@@ -92,64 +94,65 @@ class DeepSeekService(LLMService):
         # 添加其他参数
         payload.update(kwargs)
         
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=payload,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            choice = data["choices"][0]
-            message = choice["message"]
-            usage = data.get("usage", {})
-            
-            result = ChatResponse(
-                content=message["content"],
-                usage={
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0)
-                },
-                finish_reason=choice.get("finish_reason", ""),
-                raw_response=data
-            )
-            
-            # Debug 输出响应内容
-            if self.debug:
-                from qq_bot.utils.debug_logger import log_compact_debug, log_debug_block
-                # 使用 repr 显示原始内容，便于看清特殊字符
-                content_repr = repr(result.content)
-                if len(content_repr) > 500:
-                    content_repr = content_repr[:250] + " ... " + content_repr[-250:]
-                log_compact_debug("LLM 响应", 
-                                  finish_reason=result.finish_reason,
-                                  tokens=f"{usage.get('total_tokens', 0)}",
-                                  content_len=len(result.content))
-                # 单独输出完整内容便于查看
-                log_debug_block("LLM 响应内容", content_repr)
-            
-            return result
-            
-        except requests.HTTPError as e:
-            status_code = e.response.status_code if hasattr(e, 'response') else None
-            raise LLMError(
-                f"DeepSeek API 请求失败: {e}",
-                provider="deepseek",
-                status_code=status_code
-            )
-        except (KeyError, IndexError) as e:
-            raise LLMError(
-                f"解析 DeepSeek 响应失败: {e}",
-                provider="deepseek"
-            )
-        except Exception as e:
-            raise LLMError(
-                f"DeepSeek 请求异常: {e}",
-                provider="deepseek"
-            )
+        async with self._semaphore:  # 并发控制
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers=self.headers,
+                        json=payload
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    choice = data["choices"][0]
+                    message = choice["message"]
+                    usage = data.get("usage", {})
+                    
+                    result = ChatResponse(
+                        content=message["content"],
+                        usage={
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0)
+                        },
+                        finish_reason=choice.get("finish_reason", ""),
+                        raw_response=data
+                    )
+                    
+                    # Debug 输出响应内容
+                    if self.debug:
+                        from qq_bot.utils.debug_logger import log_compact_debug, log_debug_block
+                        # 使用 repr 显示原始内容，便于看清特殊字符
+                        content_repr = repr(result.content)
+                        if len(content_repr) > 500:
+                            content_repr = content_repr[:250] + " ... " + content_repr[-250:]
+                        log_compact_debug("LLM 响应", 
+                                          finish_reason=result.finish_reason,
+                                          tokens=f"{usage.get('total_tokens', 0)}",
+                                          content_len=len(result.content))
+                        # 单独输出完整内容便于查看
+                        log_debug_block("LLM 响应内容", content_repr)
+                    
+                    return result
+                    
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code if hasattr(e, 'response') else None
+                raise LLMError(
+                    f"DeepSeek API 请求失败: {e}",
+                    provider="deepseek",
+                    status_code=status_code
+                )
+            except (KeyError, IndexError) as e:
+                raise LLMError(
+                    f"解析 DeepSeek 响应失败: {e}",
+                    provider="deepseek"
+                )
+            except Exception as e:
+                raise LLMError(
+                    f"DeepSeek 请求异常: {e}",
+                    provider="deepseek"
+                )
     
     async def chat_stream(
         self,
@@ -175,46 +178,46 @@ class DeepSeekService(LLMService):
         
         payload.update(kwargs)
         
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=payload,
-                stream=True,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                
-                line = line.decode("utf-8")
-                if not line.startswith("data: "):
-                    continue
-                
-                data = line[6:]  # 移除 "data: " 前缀
-                if data == "[DONE]":
-                    break
-                
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    content = delta.get("content", "")
-                    if content:
-                        yield content
-                except json.JSONDecodeError:
-                    continue
-                    
-        except requests.HTTPError as e:
-            status_code = e.response.status_code if hasattr(e, 'response') else None
-            raise LLMError(
-                f"DeepSeek 流式请求失败: {e}",
-                provider="deepseek",
-                status_code=status_code
-            )
-        except Exception as e:
-            raise LLMError(
-                f"DeepSeek 流式请求异常: {e}",
-                provider="deepseek"
-            )
+        async with self._semaphore:  # 并发控制
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        headers=self.headers,
+                        json=payload
+                    ) as response:
+                        response.raise_for_status()
+                        
+                        async for line in response.aiter_lines():
+                            if not line:
+                                continue
+                            
+                            if not line.startswith("data: "):
+                                continue
+                            
+                            data = line[6:]  # 移除 "data: " 前缀
+                            if data == "[DONE]":
+                                break
+                            
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
+                            except json.JSONDecodeError:
+                                continue
+                            
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code if hasattr(e, 'response') else None
+                raise LLMError(
+                    f"DeepSeek 流式请求失败: {e}",
+                    provider="deepseek",
+                    status_code=status_code
+                )
+            except Exception as e:
+                raise LLMError(
+                    f"DeepSeek 流式请求异常: {e}",
+                    provider="deepseek"
+                )

@@ -816,11 +816,16 @@ class AffectionManager:
         persona_hash = self._get_persona_hash(persona_text)
         return self._persona_preferences.get(persona_hash)
     
-    async def generate_affection_config_for_persona(self, persona_text: str) -> PersonaAffectionConfig:
+    async def generate_affection_config_for_persona(
+        self, 
+        persona_text: str, 
+        skip_save: bool = False
+    ) -> PersonaAffectionConfig:
         """使用 LLM 为指定人设生成好感度配置。
         
         Args:
             persona_text: 人设文本。
+            skip_save: 如果为 True，只返回配置但不保存到数据库。
         
         Returns:
             生成的好感度配置。
@@ -922,9 +927,12 @@ class AffectionManager:
                     generated_at=int(time.time())
                 )
                 
-                # 缓存并保存
+                # 缓存
                 self._persona_affection_configs[persona_hash] = config
-                self._save_persona_affection_config(config)
+                
+                # 保存到数据库（除非 skip_save=True）
+                if not skip_save:
+                    self._save_persona_affection_config(config)
                 
                 print(f"[*] 人设好感度配置生成完成")
                 return config
