@@ -178,7 +178,7 @@ class AffectionManager:
         (-40, -20): "反感",
         (-20, 0): "疏离",
         (0, 15): "陌生",
-        (15, 35): "初识",
+        (15, 35): "<关系初建>",
         (35, 55): "熟悉",
         (55, 75): "友好",
         (75, 90): "亲密",
@@ -886,18 +886,48 @@ class AffectionManager:
             if json_match:
                 result = json.loads(json_match.group())
                 
-                # 构建 level_names 字典
+                # 构建 level_names 字典（只处理区间格式的键，如 "-100_-99"）
                 level_names = {}
                 level_names_raw = result.get("level_names", {})
+                invalid_keys = []
                 for key, value in level_names_raw.items():
+                    # 验证键格式：必须是 "数字_数字" 的区间格式
+                    if not re.match(r'^-?\d+_-?\d+$', key):
+                        invalid_keys.append(key)
+                        continue
                     parts = key.split("_")
-                    level_names[(int(parts[0]), int(parts[1]))] = value
+                    try:
+                        level_names[(int(parts[0]), int(parts[1]))] = value
+                    except (ValueError, IndexError):
+                        invalid_keys.append(key)
+                        continue
+                
+                if invalid_keys:
+                    print(f"[!] 警告: 跳过无效的 level_names 键: {invalid_keys}")
+                
+                if not level_names:
+                    raise ValueError("没有有效的 level_names 数据")
+                
+                # 获取 level_descriptions 和 tone_descriptions
+                level_descriptions = result.get("level_descriptions", {})
+                tone_descriptions = result.get("tone_descriptions", {})
+                
+                # 如果 LLM 错误地将描述合并到 level_names 中，尝试提取
+                # 检查是否有中文键（非区间格式）
+                for key, value in level_names_raw.items():
+                    # 匹配纯中文字符（排除区间格式的键）
+                    if re.match(r'^[\u4e00-\u9fff]+$', key):
+                        # 可能是描述被错误地放在 level_names 中
+                        if key not in level_descriptions and len(str(value)) <= 50:
+                            level_descriptions[key] = value
+                        if key not in tone_descriptions and len(str(value)) <= 80:
+                            tone_descriptions[key] = value
                 
                 config = PersonaAffectionConfig(
                     persona_hash=persona_hash,
                     level_names=level_names,
-                    level_descriptions=result.get("level_descriptions", {}),
-                    tone_descriptions=result.get("tone_descriptions", {}),
+                    level_descriptions=level_descriptions,
+                    tone_descriptions=tone_descriptions,
                     generated_at=int(time.time())
                 )
                 
@@ -908,7 +938,7 @@ class AffectionManager:
                 if not skip_save:
                     self._save_persona_affection_config(config)
                 
-                print(f"[*] 人设好感度配置生成完成")
+                print(f"[*] 人设好感度配置生成完成，共 {len(level_names)} 个等级")
                 return config
             else:
                 raise ValueError("无法从 LLM 响应中解析 JSON")

@@ -240,6 +240,8 @@ class Application:
             
             self._adapter = OneBot11Adapter(self.config)
             self._adapter.on_message(self._handle_message)
+            # 将 adapter 设置到上下文中，供插件使用
+            self.ctx.adapter = self._adapter
             print("[*] OneBot 适配器已初始化")
         except ImportError:
             print("[!] OneBot 适配器不可用，请安装 qq_bot.adapters.onebot")
@@ -652,8 +654,13 @@ class Application:
                 response = await chat_plugin.handle_intent(
                     self.ctx, event, intent, intent_event.parameters
                 )
+                # 如果返回了响应，直接返回
                 if response:
                     return response
+                # 如果返回 None 但是 CONFIRM 或 CANCEL 意图，表示已处理完成（如 set_persona 已自行发送消息）
+                # 不应该作为普通聊天处理
+                if intent in (IntentType.CONFIRM, IntentType.CANCEL):
+                    return None
             except Exception as e:
                 print(f"[!] Chat 插件处理失败: {e}")
                 if self.config.debug.enabled:
@@ -661,6 +668,7 @@ class Application:
                     traceback.print_exc()
         
         # Chat 插件未处理或不可用，使用内置处理器作为兜底
+        # 注意：CONFIRM 和 CANCEL 应该由 chat 插件处理，不在此列表中
         intent_handlers = {
             IntentType.HELP: self._handle_help,
             IntentType.VIEW_AFFECTION: self._handle_view_affection,
@@ -674,6 +682,10 @@ class Application:
         handler = intent_handlers.get(intent)
         if handler:
             return await handler(event, intent_event)
+        
+        # 如果是 CONFIRM 或 CANCEL 意图但 chat 插件没处理，不应该作为聊天处理
+        if intent in (IntentType.CONFIRM, IntentType.CANCEL):
+            return None
         
         # 默认聊天意图
         return await self._handle_chat(event, intent_event)

@@ -249,10 +249,15 @@ class ChatPlugin(Plugin):
             return await self._cmd_affection(event, "")
         
         elif intent == IntentType.CONFIRM:
-            return await self._handle_confirm(event)
+            result = await self._handle_confirm(event)
+            # 确认操作无论是否有返回值，都不应该作为普通聊天处理
+            # 返回 None 表示已处理但无需发送消息（如 set_persona 已自行发送）
+            return result
         
         elif intent == IntentType.CANCEL:
-            return await self._handle_cancel(event)
+            result = await self._handle_cancel(event)
+            # 取消操作无论是否有返回值，都不应该作为普通聊天处理
+            return result
         
         elif intent == IntentType.HELP:
             return await self._cmd_help(event, "")
@@ -1456,7 +1461,26 @@ class ChatPlugin(Plugin):
             return await self._execute_clear_history(event)
         elif pending.operation == 'set_persona':
             persona_text = pending.data.get('persona_text', '')
-            return await self._execute_set_persona(event, persona_text)
+            # 设置人设
+            result = await self._execute_set_persona(event, persona_text)
+            if result and result.content.startswith("❌"):
+                # 设置失败，返回错误信息
+                return result
+            # 成功设置人设，自行发送等待消息并启动后台任务
+            waiting_msg_id = await self._send_response_and_get_id(result)
+            print(f"[*] 等待消息已发送，ID: {waiting_msg_id}，准备启动后台任务")
+            # 后台异步生成配置
+            task = asyncio.create_task(
+                self._generate_config_in_background(
+                    event, persona_text, waiting_msg_id
+                )
+            )
+            task.add_done_callback(
+                lambda t: print(f"[!] 后台任务异常: {t.exception()}") if t.exception() else None
+            )
+            print(f"[*] 后台任务已创建")
+            # 返回 None 表示消息已发送，外层不需再发送
+            return None
         
         return ResponseEvent(
             content="操作已确认执行！",
@@ -1538,31 +1562,36 @@ class ChatPlugin(Plugin):
             reply_to_message_id=event.message_id if event.is_group else None
         )
     
-    async def _send_response(self, response: ResponseEvent) -> None:
+    async def _send_response(self, response: ResponseEvent) -> Optional[int]:
         """发送响应消息。
         
         Args:
             response: 响应事件。
+            
+        Returns:
+            发送的消息ID，失败返回None
         """
         adapter = getattr(self.ctx, 'adapter', None)
         if not adapter:
-            return
+            print(f"[!] 无法发送响应: adapter 未设置")
+            return None
         
         try:
             if response.target_group_id:
-                await adapter.send_group_message(
+                return await adapter.send_group_message(
                     group_id=response.target_group_id,
                     content=response.content,
-                    reply_to_message_id=response.reply_to_message_id,
-                    at_user_id=response.target_user_id if response.at_user else None
+                    reply_to=response.reply_to_message_id,
+                    at_user=response.target_user_id if response.at_user else None
                 )
             else:
-                await adapter.send_private_message(
+                return await adapter.send_private_message(
                     user_id=response.target_user_id,
                     content=response.content
                 )
         except Exception as e:
             print(f"[!] 发送响应失败: {e}")
+            return None
     
     
     def _build_progress_message(
@@ -1692,101 +1721,148 @@ class ChatPlugin(Plugin):
         event: MessageEvent, 
         persona_text: str
     ) -> ResponseEvent:
-        """执行设置人设（确认后），顺序生成配置并实时播报进度。"""
-        last_progress_msg_id: Optional[int] = None
-        
-        # 步骤1：人设确认（立即完成）
+        """执行设置人设（确认后），返回等待消息响应（由调用者发送）。"""
+        # 立即执行人设设置
         try:
             self.conversation.clear_context(event.group_id, event.user_id)
             self.affection.reset_affection(event.group_id, event.user_id)
             self.conversation.set_custom_prompt(event.group_id, event.user_id, persona_text)
-            
-            # 发送进度更新
-            progress_msg = self._build_progress_message(
-                persona_done=True,
-                preference_doing=True
-            )
-            last_progress_msg_id = await self._send_progress_update(event, progress_msg)
         except Exception as e:
-            error_msg = f"设置人设失败: {e}"
-            progress_msg = self._build_progress_message(
-                persona_error=error_msg
-            )
-            await self._send_progress_update(event, progress_msg)
             return ResponseEvent(
-                content=f"❌ {error_msg}",
+                content=f"❌ 设置人设失败: {e}",
                 target_user_id=event.user_id,
                 target_group_id=event.group_id,
                 reply_to_message_id=event.message_id if event.is_group else None
             )
         
-        # 步骤2：生成人物喜好（强制重新生成）
-        preferences = None
-        try:
-            preferences = await self.affection.generate_persona_preferences(
-                persona_text, force=True
-            )
-            # 发送进度更新
-            progress_msg = self._build_progress_message(
-                persona_done=True,
-                preference_done=True,
-                affection_doing=True
-            )
-            last_progress_msg_id = await self._send_progress_update(
-                event, progress_msg, last_progress_msg_id
-            )
-        except Exception as e:
-            error_msg = f"生成人物喜好失败: {e}"
-            progress_msg = self._build_progress_message(
-                persona_done=True,
-                preference_error=error_msg,
-                affection_doing=True  # 继续尝试生成好感度系统
-            )
-            last_progress_msg_id = await self._send_progress_update(
-                event, progress_msg, last_progress_msg_id
-            )
-        
-        # 步骤3：生成好感度系统（强制重新生成）
-        config = None
-        try:
-            config = await self.affection.generate_affection_config_for_persona(
-                persona_text, force=True
-            )
-            # 发送进度更新
-            progress_msg = self._build_progress_message(
-                persona_done=True,
-                preference_done=preferences is not None,
-                preference_error="生成失败" if preferences is None else None,
-                affection_done=True
-            )
-            last_progress_msg_id = await self._send_progress_update(
-                event, progress_msg, last_progress_msg_id
-            )
-        except Exception as e:
-            error_msg = f"生成好感度系统失败: {e}"
-            progress_msg = self._build_progress_message(
-                persona_done=True,
-                preference_done=preferences is not None,
-                preference_error="生成失败" if preferences is None else None,
-                affection_error=error_msg
-            )
-            last_progress_msg_id = await self._send_progress_update(
-                event, progress_msg, last_progress_msg_id
-            )
-        
-        # 撤回最后一个进度消息
-        if last_progress_msg_id is not None:
-            adapter = getattr(self.ctx, 'adapter', None)
-            if adapter and hasattr(adapter, 'delete_message'):
-                try:
-                    await adapter.delete_message(last_progress_msg_id)
-                except Exception as e:
-                    print(f"[!] 撤回最终进度消息失败: {e}")
-        
-        # 构建最终结果
-        return self._build_set_persona_result(
-            event, persona_text, preferences, config
+        # 返回等待消息响应，由调用者发送并启动后台任务
+        waiting_msg = (
+            "⚡ 人设系统初始化中 ⚡\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔮 正在解析人格矩阵...\n"
+            "🧬 正在构建情感模型...\n"
+            "━━━━━━━━━━━━━━\n"
+            "⏳ 请稍候，完成后将自动通知\n"
+            "✨ 准备迎接全新的相遇 ✨"
         )
+        
+        return ResponseEvent(
+            content=waiting_msg,
+            target_user_id=event.user_id,
+            target_group_id=event.group_id,
+            reply_to_message_id=event.message_id if event.is_group else None
+        )
+    
+    async def _generate_config_in_background(
+        self,
+        event: MessageEvent,
+        persona_text: str,
+        waiting_msg_id: Optional[int]
+    ) -> None:
+        """后台生成配置并在完成后通知用户。
+        
+        Args:
+            event: 消息事件
+            persona_text: 人设文本
+            waiting_msg_id: 等待消息ID，用于撤回
+        """
+        print(f"[*] 开始后台生成配置 for user {event.user_id}")
+        
+        try:
+            preferences = None
+            config = None
+            
+            # 并行生成人物喜好和好感度配置
+            print("[*] 启动人物喜好和好感度配置生成任务...")
+            prefs_task = self.affection.generate_persona_preferences(
+                persona_text, force=True
+            )
+            config_task = self.affection.generate_affection_config_for_persona(
+                persona_text, force=True
+            )
+            
+            preferences, config = await asyncio.gather(
+                prefs_task, config_task, return_exceptions=True
+            )
+            
+            # 检查是否有异常
+            if isinstance(preferences, Exception):
+                print(f"[!] 生成人物喜好失败: {preferences}")
+                preferences = None
+            else:
+                print(f"[*] 人物喜好生成完成")
+                
+            if isinstance(config, Exception):
+                print(f"[!] 生成好感度配置失败: {config}")
+                config = None
+            else:
+                print(f"[*] 好感度配置生成完成")
+            
+            # 撤回等待消息
+            print(f"[*] 准备撤回等待消息: {waiting_msg_id}")
+            if waiting_msg_id is not None:
+                adapter = getattr(self.ctx, 'adapter', None)
+                if adapter and hasattr(adapter, 'delete_message'):
+                    try:
+                        await adapter.delete_message(waiting_msg_id)
+                        print(f"[*] 等待消息已撤回")
+                    except Exception as e:
+                        print(f"[!] 撤回等待消息失败: {e}")
+                else:
+                    print(f"[!] 适配器不支持撤回功能")
+            
+            # 发送完成通知（简化版，只显示人设）
+            print(f"[*] 准备发送完成通知 to user {event.user_id}")
+            completion_msg = (
+                "✅ 人设配置已完成\n"
+                "━━━━━━━━━━━━━━\n"
+                "📝 新人设已激活\n"
+                f"{persona_text}\n"
+                "━━━━━━━━━━━━━━\n"
+                "💫 让我们开始新的对话吧~"
+            )
+            
+            response = ResponseEvent(
+                content=completion_msg,
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=None,
+                at_user=True
+            )
+            
+            result = await self._send_response(response)
+            if result is not None:
+                print(f"[*] 完成通知已发送，消息ID: {result}")
+            else:
+                print(f"[!] 完成通知发送失败，请检查 adapter 设置")
+            
+        except Exception as e:
+            print(f"[!] 后台生成配置过程发生错误: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 即使出错也尝试通知用户
+            try:
+                error_msg = (
+                    "⚠️ 好感度系统部分失败\n"
+                    "━━━━━━━━━━━━━━\n"
+                    f"📝 人设已设置，但好感度配置生成遇到一些问题\n"
+                    f"{persona_text}\n"
+                    "━━━━━━━━━━━━━━\n"
+                    "💫 让我们开始新的对话吧~"
+                )
+                response = ResponseEvent(
+                    content=error_msg,
+                    target_user_id=event.user_id,
+                    target_group_id=event.group_id,
+                    reply_to_message_id=None,
+                    at_user=True
+                )
+                result = await self._send_response(response)
+                if result is None:
+                    print(f"[!] 发送错误通知失败: adapter 未设置")
+            except Exception as e2:
+                print(f"[!] 发送错误通知也失败了: {e2}")
     
     def _build_set_persona_result(
         self,
