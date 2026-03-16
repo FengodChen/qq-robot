@@ -1564,74 +1564,297 @@ class ChatPlugin(Plugin):
         except Exception as e:
             print(f"[!] 发送响应失败: {e}")
     
-    async def _generate_affection_config_in_background(
+    
+    def _build_progress_message(
+        self, 
+        persona_done: bool = False,
+        persona_error: str = None,
+        preference_done: bool = False,
+        preference_error: str = None,
+        preference_doing: bool = False,
+        affection_done: bool = False,
+        affection_error: str = None,
+        affection_doing: bool = False
+    ) -> str:
+        """构建进度消息。
+        
+        Args:
+            persona_done: 人设确认是否完成
+            persona_error: 人设确认错误信息
+            preference_done: 人物喜好分析是否完成
+            preference_error: 人物喜好分析错误信息
+            preference_doing: 人物喜好分析是否进行中
+            affection_done: 好感度系统设计是否完成
+            affection_error: 好感度系统设计错误信息
+            affection_doing: 好感度系统设计是否进行中
+            
+        Returns:
+            格式化后的进度消息
+        """
+        lines = ["⏳ 正在初始化角色配置...", ""]
+        
+        # 人设确认
+        if persona_error:
+            lines.append(f"❌ 人设确认: {persona_error}")
+        elif persona_done:
+            lines.append("✅ 人设确认")
+        else:
+            lines.append("🔄 人设确认")
+        
+        # 人物喜好分析
+        if preference_error:
+            lines.append(f"❌ 人物喜好分析: {preference_error}")
+        elif preference_done:
+            lines.append("✅ 人物喜好分析")
+        elif preference_doing:
+            lines.append("🔄 人物喜好分析")
+        else:
+            lines.append("⬜ 人物喜好分析")
+        
+        # 好感度系统设计
+        if affection_error:
+            lines.append(f"❌ 好感度系统设计: {affection_error}")
+        elif affection_done:
+            lines.append("✅ 好感度系统设计")
+        elif affection_doing:
+            lines.append("🔄 好感度系统设计")
+        else:
+            lines.append("⬜ 好感度系统设计")
+        
+        return "\n".join(lines)
+    
+    async def _send_progress_update(
         self, 
         event: MessageEvent, 
-        persona_text: str
-    ) -> None:
-        """后台生成好感度配置并发送通知。"""
+        content: str,
+        prev_message_id: Optional[int] = None
+    ) -> Optional[int]:
+        """发送进度更新消息，并可选撤回上一条进度消息。
+        
+        Args:
+            event: 原始消息事件
+            content: 消息内容
+            prev_message_id: 上一条进度消息ID，提供则会尝试撤回
+            
+        Returns:
+            发送的消息ID，失败返回None
+        """
+        # 尝试撤回上一条进度消息
+        if prev_message_id is not None:
+            adapter = getattr(self.ctx, 'adapter', None)
+            if adapter and hasattr(adapter, 'delete_message'):
+                try:
+                    await adapter.delete_message(prev_message_id)
+                except Exception as e:
+                    print(f"[!] 撤回进度消息失败: {e}")
+        
+        response = ResponseEvent(
+            content=content,
+            target_user_id=event.user_id,
+            target_group_id=event.group_id,
+            reply_to_message_id=event.message_id if event.is_group else None,
+            at_user=True
+        )
+        return await self._send_response_and_get_id(response)
+    
+    async def _send_response_and_get_id(self, response: ResponseEvent) -> Optional[int]:
+        """发送响应消息并返回消息ID。
+        
+        Args:
+            response: 响应事件
+            
+        Returns:
+            消息ID，失败返回None
+        """
+        adapter = getattr(self.ctx, 'adapter', None)
+        if not adapter:
+            return None
+        
         try:
-            config = await self.affection.generate_affection_config_for_persona(persona_text)
-            # 获取等级名称预览
-            level_neg = config.level_names.get((-100, -99), "死敌")
-            level_zero = config.level_names.get((0, 15), "陌生")
-            level_max = config.level_names.get((100, 101), "灵魂伴侣")
-            
-            # 发送完成通知
-            notification = (
-                "💕 【好感度系统已生成】\n"
-                f"等级阶段: {level_neg} → {level_zero} → {level_max}\n"
-                "现在可以开始新的对话了~"
-            )
-            
-            # 创建响应事件并发送
-            response = ResponseEvent(
-                content=notification,
-                target_user_id=event.user_id,
-                target_group_id=event.group_id,
-                reply_to_message_id=None,
-                at_user=True
-            )
-            await self._send_response(response)
-            
+            if response.target_group_id:
+                return await adapter.send_group_message(
+                    group_id=response.target_group_id,
+                    content=response.content,
+                    reply_to=response.reply_to_message_id,
+                    at_user=response.target_user_id if response.at_user else None
+                )
+            else:
+                return await adapter.send_private_message(
+                    user_id=response.target_user_id,
+                    content=response.content
+                )
         except Exception as e:
-            print(f"[!] 后台生成好感度配置失败: {e}")
+            print(f"[!] 发送响应失败: {e}")
+            return None
     
     async def _execute_set_persona(
         self, 
         event: MessageEvent, 
         persona_text: str
     ) -> ResponseEvent:
-        """执行设置人设（确认后）。"""
-        # 清除历史记录和好感度
-        self.conversation.clear_context(event.group_id, event.user_id)
-        self.affection.reset_affection(event.group_id, event.user_id)
+        """执行设置人设（确认后），顺序生成配置并实时播报进度。"""
+        last_progress_msg_id: Optional[int] = None
         
-        # 设置新人设
-        self.conversation.set_custom_prompt(event.group_id, event.user_id, persona_text)
+        # 步骤1：人设确认（立即完成）
+        try:
+            self.conversation.clear_context(event.group_id, event.user_id)
+            self.affection.reset_affection(event.group_id, event.user_id)
+            self.conversation.set_custom_prompt(event.group_id, event.user_id, persona_text)
+            
+            # 发送进度更新
+            progress_msg = self._build_progress_message(
+                persona_done=True,
+                preference_doing=True
+            )
+            last_progress_msg_id = await self._send_progress_update(event, progress_msg)
+        except Exception as e:
+            error_msg = f"设置人设失败: {e}"
+            progress_msg = self._build_progress_message(
+                persona_error=error_msg
+            )
+            await self._send_progress_update(event, progress_msg)
+            return ResponseEvent(
+                content=f"❌ {error_msg}",
+                target_user_id=event.user_id,
+                target_group_id=event.group_id,
+                reply_to_message_id=event.message_id if event.is_group else None
+            )
         
-        # 立即返回确认消息（不等待配置生成）
-        msg = (
-            "✨ 【人设已更新】✨\n"
-            "━━━━━━━━━━━━━━\n"
-            f"📝 {persona_text}\n"
-            "━━━━━━━━━━━━━━\n"
-            "🗑️ 对话历史已清除\n"
-            "💕 好感度已重置\n"
-            "💕 正在生成专属好感度系统..."
+        # 步骤2：生成人物喜好（强制重新生成）
+        preferences = None
+        try:
+            preferences = await self.affection.generate_persona_preferences(
+                persona_text, force=True
+            )
+            # 发送进度更新
+            progress_msg = self._build_progress_message(
+                persona_done=True,
+                preference_done=True,
+                affection_doing=True
+            )
+            last_progress_msg_id = await self._send_progress_update(
+                event, progress_msg, last_progress_msg_id
+            )
+        except Exception as e:
+            error_msg = f"生成人物喜好失败: {e}"
+            progress_msg = self._build_progress_message(
+                persona_done=True,
+                preference_error=error_msg,
+                affection_doing=True  # 继续尝试生成好感度系统
+            )
+            last_progress_msg_id = await self._send_progress_update(
+                event, progress_msg, last_progress_msg_id
+            )
+        
+        # 步骤3：生成好感度系统（强制重新生成）
+        config = None
+        try:
+            config = await self.affection.generate_affection_config_for_persona(
+                persona_text, force=True
+            )
+            # 发送进度更新
+            progress_msg = self._build_progress_message(
+                persona_done=True,
+                preference_done=preferences is not None,
+                preference_error="生成失败" if preferences is None else None,
+                affection_done=True
+            )
+            last_progress_msg_id = await self._send_progress_update(
+                event, progress_msg, last_progress_msg_id
+            )
+        except Exception as e:
+            error_msg = f"生成好感度系统失败: {e}"
+            progress_msg = self._build_progress_message(
+                persona_done=True,
+                preference_done=preferences is not None,
+                preference_error="生成失败" if preferences is None else None,
+                affection_error=error_msg
+            )
+            last_progress_msg_id = await self._send_progress_update(
+                event, progress_msg, last_progress_msg_id
+            )
+        
+        # 撤回最后一个进度消息
+        if last_progress_msg_id is not None:
+            adapter = getattr(self.ctx, 'adapter', None)
+            if adapter and hasattr(adapter, 'delete_message'):
+                try:
+                    await adapter.delete_message(last_progress_msg_id)
+                except Exception as e:
+                    print(f"[!] 撤回最终进度消息失败: {e}")
+        
+        # 构建最终结果
+        return self._build_set_persona_result(
+            event, persona_text, preferences, config
         )
+    
+    def _build_set_persona_result(
+        self,
+        event: MessageEvent,
+        persona_text: str,
+        preferences: Any,
+        config: Any
+    ) -> ResponseEvent:
+        """构建设置人设的最终结果消息。
         
-        # 先发送确认消息
-        response = ResponseEvent(
-            content=msg,
+        Args:
+            event: 消息事件
+            persona_text: 人设文本
+            preferences: 人物喜好配置
+            config: 好感度配置
+            
+        Returns:
+            响应事件
+        """
+        lines = [
+            "✨ 【角色配置完成】✨",
+            "",
+            "📝 人设",
+            "━━━━━━━━━━━━━━",
+            persona_text,
+        ]
+        
+        # 人物特点
+        if preferences:
+            lines.extend([
+                "",
+                "🎯 人物特点",
+                f"• 兴趣：{', '.join(preferences.interests)}",
+                f"• 喜好：{', '.join(preferences.favorite_things)}",
+                f"• 雷点：{', '.join(preferences.dislikes)}",
+            ])
+        else:
+            lines.extend([
+                "",
+                "🎯 人物特点",
+                "• 使用默认配置（生成失败）",
+            ])
+        
+        # 好感度等级
+        if config:
+            level_neg = config.level_names.get((-100, -99), "<关系极差>")
+            level_zero = config.level_names.get((0, 15), "<关系初建>")
+            level_max = config.level_names.get((100, 101), "<关系圆满>")
+            lines.extend([
+                "",
+                "💕 好感度等级",
+                f"{level_neg} → {level_zero} → {level_max}",
+            ])
+        else:
+            lines.extend([
+                "",
+                "💕 好感度等级",
+                "使用默认配置（生成失败）",
+            ])
+        
+        lines.extend([
+            "",
+            "现在可以开始新的对话了~",
+        ])
+        
+        return ResponseEvent(
+            content="\n".join(lines),
             target_user_id=event.user_id,
             target_group_id=event.group_id,
             reply_to_message_id=event.message_id if event.is_group else None
         )
-        
-        # 后台生成好感度配置
-        asyncio.create_task(
-            self._generate_affection_config_in_background(event, persona_text)
-        )
-        
-        return response

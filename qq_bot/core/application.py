@@ -28,6 +28,7 @@ from qq_bot.services.llm.deepseek import DeepSeekService
 from qq_bot.services.storage.message import MessageStore
 from qq_bot.services.daily_summary import DailySummaryScheduler, DailySummaryConfig
 from qq_bot.services.summary_service import SummaryService
+from qq_bot.services.news_service import NewsService
 from qq_bot.utils.debug_logger import log_compact_debug
 
 
@@ -77,7 +78,7 @@ class Application:
         self._message_store: MessageStore | None = None
         self._llm_service: LLMService | None = None
         self._daily_summary_scheduler: DailySummaryScheduler | None = None
-        self._news_service: "NewsService | None" = None
+        self._news_service: NewsService | None = None
         
         # 用户信息缓存: {(group_id, user_id): {'sex': '...', 'nickname': '...', 'timestamp': 1234567890}}
         self._user_info_cache: dict[tuple[int, int], dict] = {}
@@ -253,8 +254,6 @@ class Application:
             if not self.config.news.enabled:
                 print("[*] 新闻服务已禁用")
                 return
-            
-            from qq_bot.services.news_service import NewsService
             
             self._news_service = NewsService(
                 ark_config=self.config.ark,

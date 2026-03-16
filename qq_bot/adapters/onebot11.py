@@ -402,7 +402,7 @@ class OneBot11Adapter(Adapter):
         self.state.connected = False
         print("[*] OneBot 11 适配器已停止")
     
-    async def send_private_message(self, user_id: int, content: str) -> bool:
+    async def send_private_message(self, user_id: int, content: str) -> Optional[int]:
         """发送私聊消息。
         
         Args:
@@ -410,7 +410,7 @@ class OneBot11Adapter(Adapter):
             content: 消息内容。
             
         Returns:
-            是否发送成功。
+            发送成功的消息 ID，失败返回 None。
         """
         try:
             message_segments = [{"type": "text", "data": {"text": content}}]
@@ -421,14 +421,14 @@ class OneBot11Adapter(Adapter):
             
             if result.get("status") == "ok":
                 print(f"[发送私聊] -> {user_id}: {content[:50]}...")
-                return True
+                return result.get("data", {}).get("message_id")
             else:
                 print(f"[!] 发送私聊消息失败: {result.get('message', '未知错误')}")
-                return False
+                return None
                 
         except AdapterError as e:
             print(f"[!] 发送私聊消息失败: {e}")
-            return False
+            return None
     
     async def send_group_message(
         self,
@@ -436,7 +436,7 @@ class OneBot11Adapter(Adapter):
         content: str,
         at_user: Optional[int] = None,
         reply_to: Optional[int] = None
-    ) -> bool:
+    ) -> Optional[int]:
         """发送群消息。
         
         Args:
@@ -446,7 +446,7 @@ class OneBot11Adapter(Adapter):
             reply_to: 回复的消息 ID（可选）。
             
         Returns:
-            是否发送成功。
+            发送成功的消息 ID，失败返回 None。
         """
         try:
             message_segments = []
@@ -470,14 +470,14 @@ class OneBot11Adapter(Adapter):
             
             if result.get("status") == "ok":
                 print(f"[发送群聊] -> 群{group_id}: {content[:50]}...")
-                return True
+                return result.get("data", {}).get("message_id")
             else:
                 print(f"[!] 发送群消息失败: {result.get('message', '未知错误')}")
-                return False
+                return None
                 
         except AdapterError as e:
             print(f"[!] 发送群消息失败: {e}")
-            return False
+            return None
     
     async def get_group_member_info(self, group_id: int, user_id: int) -> dict[str, Any]:
         """获取群成员信息。
@@ -529,3 +529,29 @@ class OneBot11Adapter(Adapter):
         except AdapterError as e:
             print(f"[!] 获取陌生人信息失败: {e}")
             return {}
+    
+    async def delete_message(self, message_id: int) -> bool:
+        """撤回消息。
+        
+        Args:
+            message_id: 要撤回的消息 ID。
+            
+        Returns:
+            是否撤回成功。
+        """
+        try:
+            result = await self._send_api_request(
+                "delete_msg",
+                {"message_id": message_id}
+            )
+            
+            if result.get("status") == "ok":
+                print(f"[撤回消息] -> 消息ID: {message_id}")
+                return True
+            else:
+                print(f"[!] 撤回消息失败: {result.get('message', '未知错误')}")
+                return False
+                
+        except AdapterError as e:
+            print(f"[!] 撤回消息失败: {e}")
+            return False

@@ -148,6 +148,7 @@ class AffectionPromptsConfig(BaseModel):
     
     model_config = ConfigDict(extra="forbid")
     
+    affection_config_generation: str
     preference_generation: str
     evaluation: str
 

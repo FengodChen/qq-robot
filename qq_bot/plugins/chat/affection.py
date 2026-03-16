@@ -224,37 +224,50 @@ class AffectionManager:
         print(f"[*] AffectionManager 初始化完成，共 {len(self._data)} 个用户数据")
     
     def _create_default_config(self) -> PersonaAffectionConfig:
-        """创建默认好感度配置（向后兼容）。"""
+        """创建默认好感度配置（仅作为结构模板，不应直接使用）。"""
         return PersonaAffectionConfig(
             persona_hash="default",
-            level_names=self.LEVELS.copy(),
+            level_names={
+                (-100, -99): "<关系极差>",
+                (-99, -70): "<关系很差>",
+                (-70, -40): "<关系较差>",
+                (-40, -20): "<关系不佳>",
+                (-20, 0): "<关系冷淡>",
+                (0, 15): "<关系初建>",
+                (15, 35): "<关系浅显>",
+                (35, 55): "<关系尚可>",
+                (55, 75): "<关系良好>",
+                (75, 90): "<关系亲密>",
+                (90, 100): "<关系极好>",
+                (100, 101): "<关系圆满>"
+            },
             level_descriptions={
-                "死敌": "你们是死敌关系，彼此憎恨",
-                "憎恨": "你憎恨这个用户",
-                "厌恶": "你厌恶这个用户",
-                "反感": "你对这个用户有反感",
-                "疏离": "你们关系疏离，有距离感",
-                "陌生": "你们刚刚认识，彼此还不太了解",
-                "初识": "有过几次简单交流，正在互相了解",
-                "熟悉": "比较了解彼此，关系比较自然",
-                "友好": "关系不错的朋友，相处融洽",
-                "亲密": "很亲近的关系，彼此信任",
-                "至交": "非常重要的关系，如同至交好友",
-                "灵魂伴侣": "灵魂交融的关系，彼此是唯一的存在"
+                "<关系极差>": "关系处于最低谷，极度恶劣",
+                "<关系很差>": "关系非常糟糕，充满负面情感",
+                "<关系较差>": "关系明显不佳，存在较大隔阂",
+                "<关系不佳>": "关系不太好，有一定负面印象",
+                "<关系冷淡>": "关系较为冷淡，保持距离",
+                "<关系初建>": "关系刚刚建立，尚未深入",
+                "<关系浅显>": "关系尚浅，正在逐步了解",
+                "<关系尚可>": "关系还可以，有一定交流基础",
+                "<关系良好>": "关系不错，相处较为融洽",
+                "<关系亲密>": "关系很亲密，彼此较为信任",
+                "<关系极好>": "关系非常好，彼此高度认可",
+                "<关系圆满>": "关系达到圆满状态"
             },
             tone_descriptions={
-                "死敌": "你对用户怀有极致的憎恨，语气冰冷刺骨，每一个字都像淬了毒的刀刃。",
-                "憎恨": "你对用户怀有强烈的负面情绪，语气极其冷漠、尖锐，充满敌意。",
-                "厌恶": "你对用户有明显的反感，态度冷淡疏离，不愿多交流。",
-                "反感": "你对用户有负面印象，态度冷淡客气但保持距离。",
-                "疏离": "你对用户保持明显的距离感，态度冷淡客气但疏离。",
-                "陌生": "你对用户完全是陌生人的态度，回答礼貌但极其疏远正式。",
-                "初识": "你对用户保持基本的礼貌友好，但仍然有明显的距离感。",
-                "熟悉": "你对用户比较放松，会偶尔主动关心，语气较为亲切自然。",
-                "友好": "你对用户很友善，会使用轻松活泼的语气，经常会开玩笑。",
-                "亲密": "你对用户非常亲近，语气温柔宠溺，充满关心和依赖。",
-                "至交": "你对用户毫无保留，语气极其亲密宠溺甚至带点任性。",
-                "灵魂伴侣": "你对用户的爱意已经超越了世俗的理解，达到了灵魂交融的境界。"
+                "<关系极差>": "你对用户怀有极致的负面情感，语气冰冷刺骨，充满敌意。",
+                "<关系很差>": "你对用户怀有强烈的负面情绪，语气极其冷漠、尖锐。",
+                "<关系较差>": "你对用户有明显的反感，态度冷淡疏离，不愿多交流。",
+                "<关系不佳>": "你对用户有负面印象，态度冷淡客气但保持距离。",
+                "<关系冷淡>": "你对用户保持明显的距离感，态度冷淡客气但疏离。",
+                "<关系初建>": "你对用户保持礼貌但疏远的态度，回答正式而简短。",
+                "<关系浅显>": "你对用户保持基本的礼貌友好，但仍然有明显的距离感。",
+                "<关系尚可>": "你对用户比较放松，会偶尔主动关心，语气较为亲切自然。",
+                "<关系良好>": "你对用户很友善，会使用轻松活泼的语气，经常会开玩笑。",
+                "<关系亲密>": "你对用户非常亲近，语气温柔宠溺，充满关心和依赖。",
+                "<关系极好>": "你对用户毫无保留，语气极其亲密宠溺甚至带点任性。",
+                "<关系圆满>": "你对用户的情感已经超越了普通关系，达到了完美的境界。"
             }
         )
     
@@ -819,78 +832,39 @@ class AffectionManager:
     async def generate_affection_config_for_persona(
         self, 
         persona_text: str, 
-        skip_save: bool = False
+        skip_save: bool = False,
+        force: bool = False
     ) -> PersonaAffectionConfig:
         """使用 LLM 为指定人设生成好感度配置。
         
         Args:
             persona_text: 人设文本。
             skip_save: 如果为 True，只返回配置但不保存到数据库。
+            force: 如果为 True，强制重新生成，不使用缓存。
         
         Returns:
             生成的好感度配置。
         """
         persona_hash = self._get_persona_hash(persona_text)
         
-        # 检查是否已存在
-        if persona_hash in self._persona_affection_configs:
+        # 检查是否已存在（除非 force=True）
+        if not force and persona_hash in self._persona_affection_configs:
             return self._persona_affection_configs[persona_hash]
         
-        # 如果没有 LLM 服务，返回默认配置
+        # 如果没有 LLM 服务，抛出异常
         if not self._llm:
-            print(f"[!] 没有 LLM 服务，使用默认好感度配置")
-            return self._default_config
+            raise RuntimeError("没有 LLM 服务，无法生成人设好感度配置")
         
         # 使用 LLM 生成
         try:
             from qq_bot.services.llm.base import ChatMessage
             
-            system_prompt = """你是一个专业的角色扮演游戏设计师。请根据给定的人设，设计一套完整的好感度系统。
-
-要求：
-1. 好感度范围：-100 到 100，分为12个区间
-2. 每个区间需要一个等级名称，必须符合人设中的关系设定
-3. 每个等级需要一段描述，说明在该好感度下的关系状态
-4. 每个等级需要一段语气描述，指导AI在该好感度下如何与用户对话
-
-区间划分（好感度值范围）：
-- -100 到 -99：最低级
-- -99 到 -70
-- -70 到 -40
-- -40 到 -20
-- -20 到 0
-- 0 到 15
-- 15 到 35
-- 35 到 55
-- 55 到 75
-- 75 到 90
-- 90 到 100
-- 100 到 101：最高级（满好感度）
-
-返回JSON格式：
-{
-  "level_names": {
-    "-100_-99": "等级名称1",
-    "-99_-70": "等级名称2",
-    ...
-  },
-  "level_descriptions": {
-    "等级名称1": "该等级的关系状态描述...",
-    "等级名称2": "该等级的关系状态描述...",
-    ...
-  },
-  "tone_descriptions": {
-    "等级名称1": "AI在该好感度下的说话语气...",
-    "等级名称2": "AI在该好感度下的说话语气...",
-    ...
-  }
-}
-
-注意：
-1. 等级名称要符合中文语境，有代入感
-2. 描述要具体、生动，帮助AI理解关系状态
-3. 语气描述要详细，包含用词风格、情感表达等
-4. 必须严格遵循上述12个区间的划分"""
+            # 从配置读取 prompt，如果没有则使用默认 prompt
+            system_prompt = None
+            if self._prompts and hasattr(self._prompts, 'affection_config_generation'):
+                system_prompt = self._prompts.affection_config_generation
+            if not system_prompt:
+                raise Exception("[!] 没有人设好感度配置prompt")
 
             messages = [
                 ChatMessage(role="system", content=system_prompt),
@@ -902,7 +876,7 @@ class AffectionManager:
             response = await self._llm.chat(
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1500
+                max_tokens=2048
             )
             
             # 解析 JSON 响应
@@ -941,8 +915,8 @@ class AffectionManager:
                 
         except Exception as e:
             print(f"[!] 生成人设好感度配置失败: {e}")
-            # 返回默认配置
-            return self._default_config
+            # 抛出异常，必须使用 LLM 生成配置
+            raise RuntimeError(f"生成人设好感度配置失败: {e}") from e
     
     def check_max_affection_reward(
         self, 
@@ -1006,34 +980,29 @@ class AffectionManager:
             
             return None
     
-    async def generate_persona_preferences(self, persona_text: str) -> PersonaPreferences:
+    async def generate_persona_preferences(
+        self, 
+        persona_text: str,
+        force: bool = False
+    ) -> PersonaPreferences:
         """使用 LLM 生成人设的喜好/雷点配置。
         
         Args:
             persona_text: 人设文本。
+            force: 如果为 True，强制重新生成，不使用缓存。
         
         Returns:
             生成的人设喜好/雷点数据。
         """
         persona_hash = self._get_persona_hash(persona_text)
         
-        # 检查是否已存在
-        if persona_hash in self._persona_preferences:
+        # 检查是否已存在（除非 force=True）
+        if not force and persona_hash in self._persona_preferences:
             return self._persona_preferences[persona_hash]
         
-        # 如果没有 LLM 服务，返回默认配置
+        # 如果没有 LLM 服务，抛出异常
         if not self._llm:
-            print(f"[!] 没有 LLM 服务，使用默认人设喜好配置")
-            preferences = PersonaPreferences(
-                persona_hash=persona_hash,
-                interests=["聊天", "交流"],
-                favorite_things=["友好的对话"],
-                dislikes=["粗鲁", "侮辱", "恶意攻击"],
-                personality_summary="默认性格"
-            )
-            self._persona_preferences[persona_hash] = preferences
-            self._save_persona_preferences(preferences)
-            return preferences
+            raise RuntimeError("没有 LLM 服务，无法生成人设喜好配置")
         
         # 使用 LLM 生成
         try:
@@ -1084,17 +1053,8 @@ class AffectionManager:
                 
         except Exception as e:
             print(f"[!] 生成人设喜好配置失败: {e}")
-            # 返回默认配置
-            preferences = PersonaPreferences(
-                persona_hash=persona_hash,
-                interests=["聊天", "交流"],
-                favorite_things=["友好的对话"],
-                dislikes=["粗鲁", "侮辱", "恶意攻击"],
-                personality_summary="默认性格"
-            )
-            self._persona_preferences[persona_hash] = preferences
-            self._save_persona_preferences(preferences)
-            return preferences
+            # 抛出异常，必须使用 LLM 生成配置
+            raise RuntimeError(f"生成人设喜好配置失败: {e}") from e
     
     async def evaluate_affection_with_llm(
         self,
