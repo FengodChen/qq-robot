@@ -61,6 +61,8 @@ class ChatPluginConfig(BaseModel):
     dynamic_persona_enabled: bool = True
     affection_enabled: bool = True
     confirmation_timeout: int = 300  # 敏感操作确认超时时间（秒）
+    auto_recall_enabled: bool = True  # 是否启用自动撤回
+    auto_recall_delay: int = 105      # 撤回延迟（秒），默认1分45秒
 
 
 class SummaryPluginConfig(BaseModel):

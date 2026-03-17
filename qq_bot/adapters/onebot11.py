@@ -59,6 +59,13 @@ class OneBot11Adapter(Adapter):
         # 请求响应映射
         self._pending_responses: dict[str, asyncio.Future[dict]] = {}
         
+        # 自动撤回配置
+        self._auto_recall_enabled: bool = False
+        self._auto_recall_delay: int = 105
+        
+        # 调试模式
+        self._debug: bool = False
+        
         # 控制标志
         self._running: bool = False
         self._reconnect_delay: float = 3.0
@@ -470,7 +477,19 @@ class OneBot11Adapter(Adapter):
             
             if result.get("status") == "ok":
                 print(f"[发送群聊] -> 群{group_id}: {content[:50]}...")
-                return result.get("data", {}).get("message_id")
+                message_id = result.get("data", {}).get("message_id")
+                if self._debug:
+                    print(f"[DEBUG] 群消息已发送, message_id={message_id}, auto_recall_enabled={self._auto_recall_enabled}")
+                
+                # 如果启用了自动撤回，调度撤回任务
+                if message_id and self._auto_recall_enabled:
+                    if self._debug:
+                        print(f"[DEBUG] 调度撤回任务, message_id={message_id}, delay={self._auto_recall_delay}s")
+                    task = asyncio.create_task(self._delayed_delete(message_id))
+                    self._tasks.add(task)
+                    task.add_done_callback(self._tasks.discard)
+                
+                return message_id
             else:
                 print(f"[!] 发送群消息失败: {result.get('message', '未知错误')}")
                 return None
@@ -555,3 +574,47 @@ class OneBot11Adapter(Adapter):
         except AdapterError as e:
             print(f"[!] 撤回消息失败: {e}")
             return False
+    
+    def set_auto_recall_config(self, enabled: bool, delay: int = 105) -> None:
+        """设置自动撤回配置。
+        
+        Args:
+            enabled: 是否启用自动撤回。
+            delay: 撤回延迟（秒）。
+        """
+        self._auto_recall_enabled = enabled
+        self._auto_recall_delay = delay
+        if enabled:
+            print(f"[*] 自动撤回已启用: 消息将在 {delay} 秒后自动撤回")
+        else:
+            print(f"[*] 自动撤回已禁用")
+    
+    def set_debug(self, enabled: bool) -> None:
+        """设置调试模式。
+        
+        Args:
+            enabled: 是否启用调试模式。
+        """
+        self._debug = enabled
+    
+    async def _delayed_delete(self, message_id: int) -> None:
+        """延迟撤回消息。
+        
+        Args:
+            message_id: 要撤回的消息 ID。
+        """
+        try:
+            if self._debug:
+                print(f"[DEBUG] 撤回任务开始, message_id={message_id}, 等待 {self._auto_recall_delay} 秒")
+            await asyncio.sleep(self._auto_recall_delay)
+            if self._debug:
+                print(f"[DEBUG] 等待结束, 准备撤回消息 {message_id}")
+            result = await self.delete_message(message_id)
+            if self._debug:
+                print(f"[DEBUG] 撤回结果: {result}")
+        except asyncio.CancelledError:
+            # 任务被取消，正常情况
+            if self._debug:
+                print(f"[DEBUG] 撤回任务被取消, message_id={message_id}")
+        except Exception as e:
+            print(f"[!] 延迟撤回消息失败: {e}")

@@ -242,6 +242,13 @@ class Application:
             self._adapter.on_message(self._handle_message)
             # 将 adapter 设置到上下文中，供插件使用
             self.ctx.adapter = self._adapter
+            # 设置调试模式
+            self._adapter.set_debug(self.config.debug.enabled)
+            # 设置自动撤回配置
+            self._adapter.set_auto_recall_config(
+                enabled=self.config.chat.auto_recall_enabled,
+                delay=self.config.chat.auto_recall_delay
+            )
             print("[*] OneBot 适配器已初始化")
         except ImportError:
             print("[!] OneBot 适配器不可用，请安装 qq_bot.adapters.onebot")
