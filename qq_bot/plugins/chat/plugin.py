@@ -130,6 +130,82 @@ class ChatPlugin(Plugin):
         await super().initialize()
         print(f"[*] ChatPlugin 初始化完成")
         print(f"[*] 配置: max_context={self.max_context}, max_output_tokens={self.max_output_tokens}")
+        
+        # 启动时后台初始化好感度配置
+        asyncio.create_task(self._init_affection_configs())
+    
+    async def _init_affection_configs(self) -> None:
+        """启动时初始化所有人设的好感度配置。
+        
+        处理：
+        1. 所有已存在的自定义人设
+        2. 默认人设
+        
+        如果对应的好感度配置不存在，则使用 LLM 生成并保存。
+        """
+        import traceback
+        
+        try:
+            print("[*] 开始检查并生成缺失的好感度配置...")
+            
+            # 检查 LLM 服务是否可用
+            if not self.llm:
+                print("[!] LLM 服务不可用，跳过好感度配置生成")
+                return
+            
+            # 检查 prompts 配置
+            if not hasattr(self.ctx.config, 'prompts') or not self.ctx.config.prompts.affection:
+                print("[!] 缺少 affection prompts 配置，跳过好感度配置生成")
+                return
+            
+            processed_hashes = set()
+            generated_count = 0
+            
+            # 1. 处理自定义人设
+            custom_prompts_items = list(self.conversation.custom_prompts.items())
+            print(f"[*] 发现 {len(custom_prompts_items)} 个自定义人设")
+            
+            for (group_id, user_id), persona_text in custom_prompts_items:
+                persona_hash = self.affection._get_persona_hash(persona_text)
+                
+                # 跳过已处理的（相同人设文本）
+                if persona_hash in processed_hashes:
+                    continue
+                processed_hashes.add(persona_hash)
+                
+                # 检查是否已存在配置
+                if persona_hash not in self.affection._persona_affection_configs:
+                    try:
+                        print(f"[*] 为 ({group_id},{user_id}) 的自定义人设生成好感度配置...")
+                        await self.affection.generate_affection_config_for_persona(persona_text)
+                        generated_count += 1
+                    except Exception as e:
+                        print(f"[!] 生成 ({group_id},{user_id}) 的好感度配置失败: {e}")
+                        if self.debug_mode:
+                            traceback.print_exc()
+            
+            # 2. 处理默认人设
+            default_hash = self.affection._get_persona_hash(self.system_prompt)
+            print(f"[*] 默认人设哈希: {default_hash[:8]}..., 配置是否存在: {default_hash in self.affection._persona_affection_configs}")
+            
+            if default_hash not in self.affection._persona_affection_configs:
+                try:
+                    print("[*] 为默认人设生成好感度配置...")
+                    print(f"[*] 默认人设文本: {self.system_prompt[:50]}...")
+                    await self.affection.generate_affection_config_for_persona(self.system_prompt)
+                    generated_count += 1
+                    print("[*] 默认人设好感度配置生成成功")
+                except Exception as e:
+                    print(f"[!] 生成默认人设好感度配置失败: {e}")
+                    traceback.print_exc()
+            else:
+                print("[*] 默认人设好感度配置已存在，跳过")
+            
+            print(f"[*] 好感度配置初始化完成，共生成 {generated_count} 个配置")
+            
+        except Exception as e:
+            print(f"[!] 初始化好感度配置时发生错误: {e}")
+            traceback.print_exc()
     
     async def shutdown(self) -> None:
         """关闭插件。"""
