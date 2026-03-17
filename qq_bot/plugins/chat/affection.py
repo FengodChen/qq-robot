@@ -589,7 +589,8 @@ class AffectionManager:
         """获取人设对应的好感度配置。
         
         Args:
-            persona_text: 人设文本。
+            persona_text: 人设文本。如果提供了文本但未找到对应配置，
+                         会尝试查找默认人设的配置（如果已生成）。
         
         Returns:
             好感度配置，如果不存在则返回默认配置。
@@ -598,7 +599,25 @@ class AffectionManager:
             return self._default_config
         
         persona_hash = self._get_persona_hash(persona_text)
-        return self._persona_affection_configs.get(persona_hash, self._default_config)
+        if persona_hash in self._persona_affection_configs:
+            return self._persona_affection_configs[persona_hash]
+        
+        # 如果没找到，返回默认配置
+        return self._default_config
+    
+    def has_config_for_persona(self, persona_text: str) -> bool:
+        """检查是否已有指定人设的好感度配置。
+        
+        Args:
+            persona_text: 人设文本。
+        
+        Returns:
+            是否存在对应的配置。
+        """
+        if not persona_text:
+            return False
+        persona_hash = self._get_persona_hash(persona_text)
+        return persona_hash in self._persona_affection_configs
     
     def get_affection_level(self, value: int, persona_text: str = None) -> str:
         """根据好感度值获取等级名称。

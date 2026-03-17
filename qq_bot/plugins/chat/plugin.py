@@ -884,7 +884,7 @@ class ChatPlugin(Plugin):
         
         # 2. 系统提示词 - 好感度状态（包含预计变化）
         # ========== 修改：传递人设信息 ==========
-        persona_text = custom_prompt if custom_prompt else None
+        persona_text = custom_prompt if custom_prompt else self.system_prompt
         affection_prompt = self._build_affection_prompt_with_change(
             event.group_id, event.user_id, pending_change, change_reason, persona_text
         )
@@ -1112,7 +1112,8 @@ class ChatPlugin(Plugin):
         
         # ========== 修改：使用人设对应的等级名称 ==========
         custom_prompt = self.conversation.get_custom_prompt(event.group_id, event.user_id)
-        persona_text = custom_prompt if custom_prompt else None
+        # 使用自定义人设或默认人设
+        persona_text = custom_prompt if custom_prompt else self.system_prompt
         level = self.affection.get_affection_level(current_value, persona_text)
         # ========== 修改结束 ==========
         
@@ -1424,7 +1425,7 @@ class ChatPlugin(Plugin):
         """处理好感度查询命令。"""
         # ========== 修改：获取人设信息 ==========
         custom_prompt = self.conversation.get_custom_prompt(event.group_id, event.user_id)
-        persona_text = custom_prompt if custom_prompt else None
+        persona_text = custom_prompt if custom_prompt else self.system_prompt
         info = self.affection.format_affection_info(event.group_id, event.user_id, persona_text)
         # ========== 修改结束 ==========
         
